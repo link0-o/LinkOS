@@ -292,9 +292,132 @@ p_mode_start:
     mov byte [gs:160], 'P'     ; 字符：'P'
     mov byte [gs:161], 0x0A    ; 属性：黑底亮绿字（0x0A）
 
-    ;------- 挂起等待（临时） -------
-    jmp $                      ; 死循环（$表示当前地址）
 
-.error_hlt:                    ; 保护模式下的错误处理标签
-    hlt                        ; CPU 暂停，等待中断
+; ===================================================================================
+;          OS 内核初始化：开启分页机制 & 迁移 GDT 至高地址空间
+;      功能：设置页表、重定位 GDT 和显存段、开启分页、测试虚拟内存访问
+; ===================================================================================
 
+; 此函数已完成以下工作：
+;   - 在 PAGE_DIR_TABLE_POS 处建立页目录
+;   - 建立多个页表（如映射低 1MB 内存）
+;   - 初始化页分配位图（用于后续动态分配）
+    call set_page       
+
+
+
+    sgdt [gdt_ptr]              ;导出 当前 GDT 信息
+
+;将 gdt 描述符中视频段描述符中的段基址+0xc0000000
+    mov ebx, [gdt_ptr + 2]                          ; ebx = 当前 GDT 的物理基地址（从 gdt_ptr.base 取出）
+                                                    ; +2 是因为前 2 字节是 limi
+    or dword [ebx + 0x18 + 4], 0xc0000000           ; 视频段是第 3 个段描述符，每个描述符是 8 字节，故 0x18
+                                                    ; 结果：原显存地址 0xB8000 → 新地址 0xC00B8000
+
+    add dword [gdt_ptr + 2], 0xc0000000             ; 把 gdt_ptr 中记录的 GDT 基地址加上 0xC0000000
+                                                    ; 即：告诉 CPU “新的 GDT 在 0xC0xxxxxx”
+
+    add esp, 0xc0000000             ; 将当前栈指针从低地址（0x900 -> 0x0000900）调整为高地址
+
+    mov eax, PAGE_DIR_TABLE_POS     ; eax = 页目录的物理地址（ 0x101000）
+    mov cr3, eax                    ; 将页目录地址写入 cr3 寄存器
+                                    ; MMU 将从此处查找页表结构
+
+    mov eax, cr0                    ; 读取 cr0 控制寄存器
+    or eax, 0x80000000              ; 设置 PG 位（第 31 位）为 1 → 启用分页
+    mov cr0, eax                    ; 写回 cr0
+
+;在开启分页后，用 gdt 新的地址重新加载
+    lgdt [gdt_ptr]                  ; 重新加载
+
+    mov byte [gs:160], 'V'          ;视频段段基址已经被更新，用字符 v 表示 virtual addr
+
+;悬停
+    jmp $
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;------------- 创建页目录及页表 ---------------;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;清除页表目录的地址空间
+set_page:
+    mov ecx, 4096           ;4KB=4096B
+    mov esi, 0
+;使用循环清除
+.clear_page_dir:
+    mov byte [PAGE_DIR_TABLE_POS + esi], 0          ;PAGE_DIR_TABLE_POS equ 0x100000,模仿linux,高地址1G分配给系统内核
+    inc esi                 ;自增
+    loop .clear_page_dir    ;ecx计数-1,然后循环跳转
+
+;创建页目录(PDE)
+.create_pde:
+    mov eax, PAGE_DIR_TABLE_POS
+    add eax, 0x1000                     ;此时eax为第一个页表的位置和属性(因为页目录本身也占用1KB)
+    mov ebx, eax                        ;为.create_pte 做准备,ebx作为基址
+    
+; 建立虚拟地址的双重映射：将低地址空间与内核空间的起始部分指向同一物理内存
+; 目的是让内核在高地址运行时，仍能访问低地址的数据（如引导信息、GDT等）
+
+    or eax, PG_US_U | PG_RW_W | PG_P
+; 设置页目录项属性：
+; - PG_P (Present):     1 → 页面存在
+; - PG_RW_W (Writable): 1 → 可读写
+; - PG_US_U (User):     1 → 用户和内核均可访问（所有特权级）
+; 此时 eax = 第一个页表的物理地址（如 0x101000） + 属性位（0x7）
+
+    mov [PAGE_DIR_TABLE_POS + 0x0], eax
+; 将第一个页目录项（PDE[0]）设置为指向第一个页表
+; 负责映射虚拟地址 0x00000000 ~ 0x003FFFFF（即前 4MB 的用户空间）
+
+    mov [PAGE_DIR_TABLE_POS + 0xc00], eax
+; 将第 768 个页目录项（PDE[768]）设置为相同的值
+; 因为 0xC00 = 768 × 4，对应虚拟地址 0xC0000000 开始的 4MB 区域
+; 即：虚拟地址 0xC0000000 ~ 0xC03FFFFF 也被映射到同一个页表
+;
+; 实现效果：低地址（0x0）和内核空间起始（0xC0000000）共享相同物理内存
+;       为内核加载到高地址后访问低地址内容做准备
+
+; 虚拟地址空间划分说明（标准 3GB/1GB 模型）：
+;   0x00000000 ~ 0xBFFFFFFF : 用户空间（共 3GB）
+;   0xC0000000 ~ 0xFFFFFFFF : 内核空间（共 1GB）
+; 当前仅初始化了 PDE[0] 和 PDE[768]，后续需填充其他项以扩展映射
+
+    sub eax, 0x1000
+; 恢复得到页目录表自身的物理地址（原为 0x101000，减去 0x1000 → 0x100000）
+
+    mov [PAGE_DIR_TABLE_POS + 4092], eax
+; 将最后一个页目录项（PDE[1023]）指向页目录表自己（自映射）
+; 4092 = 1023 × 4，是页目录中最后一项的偏移地址
+;
+; 作用：实现“页目录自映射”
+;       之后可通过虚拟地址 0xFFC00000 + (index << 12) 访问任意 PDE
+;       极大简化后期动态管理页表的操作
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;-------下面创建页表项--------;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+    mov ecx, 256                                ; 1M 低端内存 / 每页大小 4k = 256
+    mov esi, 0
+    mov edx, PG_US_U | PG_RW_W | PG_P           ; 属性为 7，US=1，RW=1，P=1
+
+.create_pte:
+    mov [ebx+esi*4], edx                        ;ebx值为0x101000，也就是第一个页表的地址
+    add edx, 4096                               ;地址加上4KB
+    inc esi
+    loop .create_pte
+
+;创建内核其他页表的PDE
+    mov eax, PAGE_DIR_TABLE_POS
+    add eax, 0x2000                             ;第二个页表的位置
+    or  eax, PG_US_U | PG_RW_W | PG_P           ;页目录项的属性 US､ RW 和 P 位都为 1
+    mov ebx, PAGE_DIR_TABLE_POS
+    mov ecx, 254                                ; 范围为第 769～1022 的所有目录项数量
+    mov esi, 769
+.create_kernel_pde:
+    mov [ebx+esi*4], eax                        
+    inc esi
+    add eax, 0x1000
+    loop .create_kernel_pde
+
+    ret
