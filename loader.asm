@@ -292,6 +292,22 @@ p_mode_start:
     mov byte [gs:160], 'P'     ; 字符：'P'
     mov byte [gs:161], 0x0A    ; 属性：黑底亮绿字（0x0A）
 
+;===============================================================================
+; 加载内核到内存（保护模式下）
+;===============================================================================
+; 在保护模式下从硬盘读取 kernel.bin 到物理地址 KERNEL_BIN_BASE_ADDR (0x70000)
+; 读取 200 个扇区（100KB），足够容纳当前内核
+; 注意：如果内核 > 192KB，需要将 KERNEL_BIN_BASE_ADDR 改到 1MB 以上
+;===============================================================================
+
+    mov eax, KERNEL_START_SECTOR    ; kernel.bin 所在的起始扇区号
+    mov ebx, KERNEL_BIN_BASE_ADDR   ; 目标物理地址（0x70000）
+    mov ecx, 200                    ; 读取 200 扇区 = 100KB
+    call rd_disk_m_32               ; 调用保护模式磁盘读取函数
+
+    mov byte [gs:162], 'K'          ; 显示 'K' 表示内核加载完成
+    mov byte [gs:163], 0x0C         ; 红色
+
 
 ; ===================================================================================
 ;          OS 内核初始化：开启分页机制 & 迁移 GDT 至高地址空间
@@ -328,11 +344,38 @@ p_mode_start:
     mov cr0, eax                    ; 写回 cr0
 
 ;在开启分页后，用 gdt 新的地址重新加载
-    lgdt [gdt_ptr]                  ; 重新加载
+    lgdt [gdt_ptr]                  ; 重新加载 GDT
 
-    mov byte [gs:160], 'V'          ;视频段段基址已经被更新，用字符 v 表示 virtual addr
+;重新加载段寄存器，使新的段描述符生效
+    jmp SELECTOR_CODE:reload_segments   ; 刷新 CS 段寄存器
 
-;悬停
+reload_segments:
+    mov ax, SELECTOR_DATA
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    
+    mov ax, SELECTOR_VIDEO          ; 重新加载 GS，使用新的显存段基址（0xC00B8000）
+    mov gs, ax
+
+    mov byte [gs:160], 'V'          ; 视频段段基址已经被更新，用字符 V 表示 virtual addr
+    mov byte [gs:161], 0x0A         ; 绿色
+
+;===============================================================================
+; 初始化内核：解析 ELF 格式并加载到正确的虚拟地址
+;===============================================================================
+    call kernel_init
+    mov esp, 0xc009f000             ;设置栈顶
+    
+    mov byte [gs:164], 'I'          ; 显示 'I' 表示内核初始化完成
+    mov byte [gs:165], 0x0E         ; 黄色
+
+;===============================================================================
+; 跳转到内核入口点
+;===============================================================================
+    jmp KERNEL_ENTRY_POINT          ; 跳转到内核 main 函数
+
+;悬停（如果内核返回，则在此死循环）
     jmp $
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -397,27 +440,203 @@ set_page:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;-------下面创建页表项--------;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; 为第一个页表（0x101000）创建页表项，映射低端 1MB 内存（0x0～0xFFFFF）
     mov ecx, 256                                ; 1M 低端内存 / 每页大小 4k = 256
     mov esi, 0
     mov edx, PG_US_U | PG_RW_W | PG_P           ; 属性为 7，US=1，RW=1，P=1
 
 .create_pte:
-    mov [ebx+esi*4], edx                        ;ebx值为0x101000，也就是第一个页表的地址
-    add edx, 4096                               ;地址加上4KB
+    mov [ebx+esi*4], edx                        ; ebx=0x101000，第一个页表的地址
+    add edx, 4096                               ; 物理地址 += 4KB
     inc esi
     loop .create_pte
 
-;创建内核其他页表的PDE
+; 创建内核页表的 PDE（页目录项 768，对应虚拟地址 0xC0000000）
+; 第 768 个 PDE 对应虚拟地址 768*4MB = 0xC0000000（3GB）
     mov eax, PAGE_DIR_TABLE_POS
-    add eax, 0x2000                             ;第二个页表的位置
-    or  eax, PG_US_U | PG_RW_W | PG_P           ;页目录项的属性 US､ RW 和 P 位都为 1
+    add eax, 0x2000                             ; 第二个页表的位置（0x102000）
+    or  eax, PG_US_U | PG_RW_W | PG_P           ; 页目录项属性 US=1, RW=1, P=1
     mov ebx, PAGE_DIR_TABLE_POS
-    mov ecx, 254                                ; 范围为第 769～1022 的所有目录项数量
-    mov esi, 769
-.create_kernel_pde:
-    mov [ebx+esi*4], eax                        
-    inc esi
-    add eax, 0x1000
-    loop .create_kernel_pde
+    mov [ebx+768*4], eax                        ; 在页目录第 768 项写入第二个页表地址
 
+; 为第二个页表（0x102000）创建页表项，映射内核虚拟地址
+; 虚拟地址 0xC0000000 映射到物理地址 0x0
+; 这样内核在 0xC0000000+X 的虚拟地址实际访问物理地址 0x0+X
+    mov ebx, PAGE_DIR_TABLE_POS
+    add ebx, 0x2000                             ; ebx = 0x102000，第二个页表地址
+    mov ecx, 256                                ; 创建 256 个页表项，映射 1MB
+    mov esi, 0
+    mov edx, PG_US_U | PG_RW_W | PG_P           ; 属性为 7
+
+.create_kernel_pte:
+    mov [ebx+esi*4], edx
+    add edx, 4096
+    inc esi
+    loop .create_kernel_pte
+
+    ret
+
+;===============================================================================
+; rd_disk_m_32 - 保护模式下读取硬盘扇区
+;===============================================================================
+; 功能：在 32 位保护模式下从硬盘读取 n 个扇区到指定内存地址
+; 输入：
+;   eax = LBA 起始扇区号
+;   ebx = 目标内存地址（物理地址）
+;   ecx = 要读取的扇区数
+; 输出：无
+; 说明：使用 PIO 模式（Port I/O）与 ATA 硬盘控制器通信
+;===============================================================================
+rd_disk_m_32:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+
+    mov esi, eax                    ; 备份 LBA 扇区号到 esi
+    mov edi, ecx                    ; 备份扇区数到 edi
+
+    ;--- 1. 设置要读取的扇区数 ---
+    mov dx, 0x1f2                   ; 端口 0x1f2：扇区数寄存器
+    mov al, cl                      ; 要读取的扇区数
+    out dx, al
+
+    mov eax, esi                    ; 恢复 LBA 扇区号
+
+    ;--- 2. 将 LBA 地址写入端口 0x1f3~0x1f6 ---
+    ; 2.1 写入 LBA 低 8 位
+    mov dx, 0x1f3
+    out dx, al
+
+    ; 2.2 写入 LBA 中 8 位（位 8-15）
+    shr eax, 8
+    mov dx, 0x1f4
+    out dx, al
+
+    ; 2.3 写入 LBA 高 8 位（位 16-23）
+    shr eax, 8
+    mov dx, 0x1f5
+    out dx, al
+
+    ; 2.4 写入设备寄存器（位 24-27 + LBA 模式标志）
+    shr eax, 8
+    and al, 0x0f                    ; 只保留低 4 位（LBA 的位 24-27）
+    or al, 0xe0                     ; 设置位 5-7 为 111（LBA 模式，主盘）
+    mov dx, 0x1f6
+    out dx, al
+
+    ;--- 3. 发送读取命令 ---
+    mov dx, 0x1f7                   ; 端口 0x1f7：命令/状态寄存器
+    mov al, 0x20                    ; 命令 0x20：读取扇区
+    out dx, al
+
+    ;--- 4. 检测硬盘状态，等待数据准备好 ---
+.not_ready:
+    nop                             ; 短暂延迟
+    in al, dx                       ; 读取状态寄存器
+    and al, 0x88                    ; 检查 BSY(位7) 和 DRQ(位3)
+    cmp al, 0x08                    ; DRQ=1 且 BSY=0 表示数据就绪
+    jnz .not_ready                  ; 未就绪则继续等待
+
+    ;--- 5. 从数据端口读取数据 ---
+    mov ax, di                      ; 扇区数
+    mov dx, 256                     ; 每个扇区 512 字节 = 256 个字（word）
+    mul dx                          ; ax = 扇区数 × 256
+    mov ecx, eax                    ; ecx = 总共要读取的字数
+
+    mov dx, 0x1f0                   ; 端口 0x1f0：数据寄存器
+.go_on_read:
+    in ax, dx                       ; 读取 2 字节
+    mov [ebx], ax                   ; 写入目标内存
+    add ebx, 2                      ; 地址 +2
+    loop .go_on_read                ; 循环读取
+
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+;===============================================================================
+; kernel_init - 初始化内核（解析 ELF 并加载到虚拟地址）
+;===============================================================================
+; 功能：解析 kernel.bin（ELF 格式），将各个 segment 拷贝到编译时指定的虚拟地址
+; 输入：kernel.bin 已加载到 KERNEL_BIN_BASE_ADDR (0x70000)
+; 输出：内核各段被正确加载到虚拟地址空间
+; 说明：
+;   - 读取 ELF header 获取 program header table 信息
+;   - 遍历每个 program header，将 PT_LOAD 类型的段拷贝到目标虚拟地址
+;===============================================================================
+kernel_init:
+    xor eax, eax
+    xor ebx, ebx                    ; ebx 记录 program header table 地址
+    xor ecx, ecx                    ; cx 记录 program header 数量
+    xor edx, edx                    ; dx 记录 program header 大小
+
+    ; 读取 ELF header 中的关键字段
+    mov dx, [KERNEL_BIN_BASE_ADDR + 42]   ; e_phentsize (program header 大小)
+    mov ebx, [KERNEL_BIN_BASE_ADDR + 28]  ; e_phoff (第1个 program header 的偏移)
+    add ebx, KERNEL_BIN_BASE_ADDR         ; 转换为物理地址
+    mov cx, [KERNEL_BIN_BASE_ADDR + 44]   ; e_phnum (program header 数量)
+
+.each_segment:
+    cmp byte [ebx + 0], PT_NULL     ; p_type 字段：检查是否为 PT_NULL
+    je .PT_NULL                      ; 如果是，跳过此 program header
+
+    ; 检查虚拟地址是否在内核空间（0xC0000000 以上）
+    ; 过滤掉低地址段（如 0x08048000 的 .note 段）
+    mov eax, [ebx + 8]              ; eax = p_vaddr
+    cmp eax, 0xC0000000             ; 检查是否 >= 3GB（内核虚拟地址空间）
+    jb .PT_NULL                     ; 如果小于，跳过此段
+
+    ; 准备调用 mem_cpy(dst, src, size)
+    ; 参数从右往左压栈
+
+    push dword [ebx + 16]           ; 参数3：size = p_filesz（段在文件中的大小）
+    
+    mov eax, [ebx + 4]              ; p_offset（段在文件中的偏移）
+    add eax, KERNEL_BIN_BASE_ADDR   ; 转换为物理地址
+    push eax                        ; 参数2：src（源地址）
+    
+    push dword [ebx + 8]            ; 参数1：dst = p_vaddr（目标虚拟地址）
+    
+    call mem_cpy                    ; 执行内存拷贝
+    add esp, 12                     ; 清理栈中的 3 个参数
+
+.PT_NULL:
+    add ebx, edx                    ; ebx 指向下一个 program header
+    loop .each_segment              ; 循环处理所有 program header
+    ret
+
+;===============================================================================
+; mem_cpy - 内存拷贝函数
+;===============================================================================
+; 功能：逐字节拷贝内存
+; 输入：栈中三个参数
+;   [ebp + 8]  = dst（目标地址）
+;   [ebp + 12] = src（源地址）
+;   [ebp + 16] = size（字节数）
+; 输出：无
+; 说明：使用 rep movsb 指令实现高效拷贝
+;===============================================================================
+mem_cpy:
+    cld                             ; 清除方向标志，使 esi/edi 自增
+    push ebp
+    mov ebp, esp
+    push ecx                        ; 保存 ecx（外层可能在使用）
+    push esi
+    push edi
+    
+    mov edi, [ebp + 8]              ; 目标地址
+    mov esi, [ebp + 12]             ; 源地址
+    mov ecx, [ebp + 16]             ; 拷贝字节数
+    rep movsb                       ; 逐字节拷贝：*(edi++) = *(esi++)，重复 ecx 次
+    
+    ; 恢复环境
+    pop edi
+    pop esi
+    pop ecx
+    pop ebp
     ret

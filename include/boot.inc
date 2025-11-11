@@ -5,6 +5,16 @@
 LOADER_BASE_ADDR equ 0x900
 LOADER_START_SECTOR equ 0x2
 
+;-------------- kernel 加载相关 --------------
+KERNEL_START_SECTOR equ 0x9           ; kernel.bin 在硬盘的起始扇区（LBA）
+KERNEL_BIN_BASE_ADDR equ 0x70000      ; kernel.bin 临时加载到的物理地址（448KB）
+                                      ; 当前内核只有 ~5KB，放在这里安全
+                                      ; 如果内核 > 192KB，需要改到 1MB 以上
+KERNEL_ENTRY_POINT equ 0xc0001500     ; 内核入口地址（虚拟地址）
+
+;-------------- ELF 文件格式常量 --------------
+PT_NULL equ 0                          ; 未使用的 program header
+
 PAGE_DIR_TABLE_POS equ 0x100000
 
 ;-------------- gdt 描述符属性 -------------
