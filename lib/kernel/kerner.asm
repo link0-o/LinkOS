@@ -7,48 +7,39 @@
 %define ERROR_CODE nop       ;CPU 已压入错误码，不做操作
 %define ZERO push 0          ;CPU 没压入错误码，手工压入 0
 
-extern put_str
+extern idt_table             ;C 中注册的中断处理程序数组
 
 section .data
-intr_str db "interrupt occur!", 0xa, 0
 global intr_entry_table
 intr_entry_table:
 
 ;--------------------------------------------------
-; VECTOR 宏 - 批量生成中断处理程序
+; VECTOR 宏 - 批量生成中断处理程序入口
 ; 参数：%1=中断号  %2=ERROR_CODE/ZERO
+; 功能：保存上下文 -> 调用 C 处理函数 -> 恢复上下文
 ;--------------------------------------------------
 %macro VECTOR 2
 section .text
 intr%1entry:
-    %2
+    %2                      ; 若 CPU 没压入错误码，手工压入 0 占位
     push ds
     push es
     push fs
     push gs
-    pushad                  ;对8个通用寄存器进行压栈
+    pushad                  ; 保存 8 个通用寄存器
     
-    ;打印中断信息
-    push intr_str
-    call put_str
-    add esp, 4
-    
-    ;发送 EOI (中断结束信息) 到 8259A
+    ; 发送 EOI (中断结束) 到 8259A
     mov al, 0x20
-    out 0xa0, al    ;从片
-    out 0x20, al    ;主片
+    out 0xa0, al            ; 从片
+    out 0x20, al            ; 主片
     
-    ;恢复寄存器
-    popad
-    pop gs
-    pop fs
-    pop es
-    pop ds
-    add esp, 4      ;跨过 error_code
-    iret
-
+    ; 调用 C 层的中断处理函数
+    push %1                 ; 压入中断向量号作为参数
+    call [idt_table + %1*4] ; 调用 idt_table[vec_nr]
+    jmp intr_exit           ; 跳转到统一的退出代码
+    
 section .data
-    dd intr%1entry
+    dd intr%1entry          ; 存储中断入口地址
 %endmacro
 
 ;--------------------------------------------------
@@ -105,3 +96,17 @@ VECTOR 0x2c, ZERO            ;PS/2 鼠标
 VECTOR 0x2d, ZERO            ;协处理器
 VECTOR 0x2e, ZERO            ;IDE 主盘
 VECTOR 0x2f, ZERO            ;IDE 从盘
+
+;--------------------------------------------------
+; 中断退出统一处理
+;--------------------------------------------------
+section .text
+intr_exit:
+    add esp, 4              ; 跳过中断向量号参数
+    popad                   ; 恢复通用寄存器
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    add esp, 4              ; 跳过 error_code
+    iret                    ; 中断返回

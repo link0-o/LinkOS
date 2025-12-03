@@ -21,24 +21,27 @@ echo ""
 echo "========== 3. 编译 Kernel =========="
 mkdir -p build
 
-echo "  [1/5] 编译 main.c..."
-gcc -m32 -I lib/kernel/ -I lib/ -c -fno-builtin -o build/main.o lib/kernel/main.c || exit 1
+echo "  [1/6] 编译 main.c..."
+gcc -m32 -I lib/kernel/ -I lib/ -I device/ -c -fno-builtin -o build/main.o lib/kernel/main.c || exit 1
 
-echo "  [2/5] 编译 init.c..."
-gcc -m32 -I lib/kernel/ -I lib/ -c -fno-builtin -o build/init.o lib/kernel/init.c || exit 1
+echo "  [2/6] 编译 init.c..."
+gcc -m32 -I lib/kernel/ -I lib/ -I device/ -c -fno-builtin -o build/init.o lib/kernel/init.c || exit 1
 
-echo "  [3/5] 编译 interrupt.c..."
-gcc -m32 -I lib/kernel/ -I lib/ -c -fno-builtin -o build/interrupt.o lib/kernel/interrupt.c || exit 1
+echo "  [3/6] 编译 interrupt.c..."
+gcc -m32 -I lib/kernel/ -I lib/ -I device/ -c -fno-builtin -o build/interrupt.o lib/kernel/interrupt.c || exit 1
 
-echo "  [4/5] 编译 print.asm..."
+echo "  [4/6] 编译 timer.c..."
+gcc -m32 -I lib/kernel/ -I lib/ -I device/ -c -fno-builtin -o build/timer.o device/timer.c || exit 1
+
+echo "  [5/6] 编译 print.asm..."
 nasm -f elf -o build/print.o lib/kernel/print.asm || exit 1
 
-echo "  [5/5] 编译 kerner.asm (中断入口表)..."
+echo "  [6/6] 编译 kerner.asm (中断入口表)..."
 nasm -f elf -o build/kerner.o lib/kernel/kerner.asm || exit 1
 
 echo "  [链接] 生成 kernel.bin..."
 ld -m elf_i386 -Ttext 0xc0001500 -e main -o build/kernel.bin \
-    build/main.o build/init.o build/interrupt.o build/print.o build/kerner.o || exit 1
+    build/main.o build/init.o build/interrupt.o build/timer.o build/print.o build/kerner.o || exit 1
 
 # 复制到 kernel 目录（保持兼容）
 mkdir -p kernel

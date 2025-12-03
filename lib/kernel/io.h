@@ -22,6 +22,11 @@
         /*outsw 是把 ds:esi 处的 16 位的内容写入 port 端口,我们在设置段描述符时,
         已经将 ds,es,ss 段的选择子都设置为相同的值了，此时不用担心数据错乱*/
 
+        //cld （Clear Direction Flag） 作用：将 方向标志位（Direction Flag, DF） 清零
+        //影响：当 DF = 0 时，字符串操作（如 movsb, movsw, outsb, outsw 等）执行后，地址指针（如 ESI, EDI）会 自动递增。
+        //如果不设置 cld，DF 可能为 1（例如被其他代码修改过），导致指针递减，从而读写出错
+        //rep 循环,cx值为 0停止
+
         asm volatile ("cld; rep outsw" : "+S"(addr),"+c"(word_cnt) : "d"(port));
     }
 

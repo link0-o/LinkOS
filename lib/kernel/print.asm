@@ -6,6 +6,7 @@ SELECTOR_VIDEO equ (0x0003<<3) + TI_GDT + RPL0
 
 section .data
 put_int_buffer dq 0    ; 定义 8 字节缓冲区用于数字到字符的转换
+put_hex_buffer dq 0    ; 十六进制转换缓冲区（8字节足够存储 0xFFFFFFFF）
 
 section .text
 ;------------------------ put_char -----------------------------
@@ -318,6 +319,87 @@ put_int:
     jmp .print_each_digit
     
 .print_done:
+    popad
+    ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; put_hex - 打印 32 位数的十六进制表示（带 0x 前缀）
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; 功能：将 32 位整数转换为十六进制字符串并打印
+; 输入：栈中参数为待打印的 32 位数字
+; 输出：在屏幕上打印 0x 前缀的十六进制数（如 0x1A2B3C4D）
+; 说明：使用除 16 取余的方法，数字 0-9 用 '0'-'9'，10-15 用 'A'-'F'
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+global put_hex
+put_hex:
+    pushad
+    mov ebp, esp
+    mov eax, [ebp + 4*9]        ; 获取 32 位参数
+    mov ebx, put_hex_buffer     ; ebx 指向十六进制缓冲区
+    mov edi, 0                  ; edi 记录已存储字符数
+    
+    ; 特殊处理：如果是 0，直接输出 0x0
+    test eax, eax
+    jnz .hex_convert_loop
+    mov byte [ebx], '0'
+    mov edi, 1
+    jmp .hex_print_prefix
+    
+.hex_convert_loop:
+    ; 循环除以 16，将余数转换为十六进制字符
+    mov edx, 0                  ; 清空 edx（高32位）
+    mov ecx, 16                 ; 除数 16
+    div ecx                     ; eax = eax / 16, edx = eax % 16
+    
+    ; 将余数（0-15）转换为十六进制字符
+    cmp dl, 9                   ; 判断余数是否小于等于 9
+    jle .hex_digit              ; 如果 <= 9，是数字字符
+    ; 余数 >= 10，是字母 A-F
+    add dl, 'A' - 10            ; 10->A, 11->B, ..., 15->F
+    jmp .hex_store
+    
+.hex_digit:
+    add dl, '0'                 ; 0->0, 1->1, ..., 9->9
+    
+.hex_store:
+    mov [ebx + edi], dl         ; 存入缓冲区（从前往后，稍后逆序打印）
+    inc edi                     ; 移动到下一个位置
+    
+    ; 检查商是否为 0
+    test eax, eax               ; eax == 0?
+    jnz .hex_convert_loop       ; 不为0，继续循环
+    
+    ; 添加字符串结尾标记
+    mov byte [ebx + edi], 0
+    
+.hex_print_prefix:
+    ; 打印 "0x" 前缀
+    mov cl, '0'
+    push ecx
+    call put_char
+    add esp, 4
+    
+    mov cl, 'x'
+    push ecx
+    call put_char
+    add esp, 4
+    
+    ; 逆序打印缓冲区中的十六进制数字
+    dec edi                     ; edi 指向最后一个有效字符
+    
+.hex_print_loop:
+    cmp edi, 0
+    jl .hex_done                ; 如果 edi < 0，打印完成
+    
+    mov cl, [ebx + edi]         ; 获取字符
+    push ecx
+    call put_char               ; 打印字符
+    add esp, 4
+    
+    dec edi                     ; 移动到前一个字符
+    jmp .hex_print_loop
+    
+.hex_done:
     popad
     ret
 
