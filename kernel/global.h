@@ -2,6 +2,15 @@
 #define __KERNEL_GLOBAL_H
 #include "stdint.h"
 
+// 自定义 NULL 宏
+#define NULL ((void*)0)
+
+// 自定义 bool 类型
+typedef enum {
+    false = 0,
+    true = 1
+} bool;
+
 #define RPL0 0
 #define RPL1 1
 #define RPL2 2
