@@ -5,7 +5,7 @@ ENTRY_POINT = 0xc0001500
 AS = nasm
 CC = gcc
 LD = ld
-LIB = -I lib/ -I lib/kernel/ -I lib/usr/  -I kernel/ -I device/
+LIB = -I lib/ -I lib/kernel/ -I lib/usr/  -I kernel/ -I device/ -I thread/
 ASFLAGS = -f elf
 DISK_IMG = /home/yangyuhang/bochs/disk/hd60M.img
 
@@ -19,7 +19,7 @@ LDFLAGS = -m elf_i386 -Ttext $(ENTRY_POINT) -e main -Map $(BUILD_DIR)/kernel.map
 OBJS = $(BUILD_DIR)/main.o $(BUILD_DIR)/init.o $(BUILD_DIR)/interrupt.o \
        $(BUILD_DIR)/timer.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/print.o \
 	   $(BUILD_DIR)/debug.o $(BUILD_DIR)/memory.o $(BUILD_DIR)/bitmap.o \
-	   $(BUILD_DIR)/string.o
+	   $(BUILD_DIR)/string.o $(BUILD_DIR)/thread.o
 
 ##############	MBR 和 Loader 编译  ###############
 $(BUILD_DIR)/mbr.bin: mbr.asm
@@ -30,7 +30,7 @@ $(BUILD_DIR)/loader.bin: loader.asm
 
 ##############	c 代码编译	###############
 $(BUILD_DIR)/main.o: kernel/main.c lib/kernel/print.h lib/stdint.h kernel/init.h \
-					 lib/kernel/debug.h kernel/memory.h
+					 lib/kernel/debug.h kernel/memory.h thread/thread.h
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/init.o: kernel/init.c kernel/init.h lib/kernel/print.h \
@@ -63,6 +63,10 @@ $(BUILD_DIR)/string.o: lib/string.c lib/string.h \
 					 lib/stdint.h kernel/global.h lib/kernel/debug.h
 	$(CC) $(CFLAGS) $< -o $@
 
+$(BUILD_DIR)/thread.o: thread/thread.c thread/thread.h \
+					 lib/stdint.h lib/string.h kernel/global.h kernel/memory.h
+	$(CC) $(CFLAGS) $< -o $@
+
 ##############	汇编代码编译  ###############
 $(BUILD_DIR)/kernel.o: kernel/kernel.asm
 	$(AS) $(ASFLAGS) $< -o $@
@@ -90,8 +94,9 @@ hd_kernel: $(BUILD_DIR)/kernel.bin
 hd: hd_mbr hd_loader hd_kernel
 
 clean:
-	cd $(BUILD_DIR) && rm -f ./*
+	cd $(BUILD_DIR) && rm -f ./* && @echo "clean done!"
 
 compile: $(BUILD_DIR)/mbr.bin $(BUILD_DIR)/loader.bin $(BUILD_DIR)/kernel.bin
 
 all: mk_dir compile hd
+	@echo "build done!"
