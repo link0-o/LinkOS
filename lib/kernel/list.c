@@ -21,7 +21,7 @@ void list_insert_before(struct list_elem* before, struct list_elem* elem){
 
 /* 添加元素到列表队首 */
 void list_push(List* plist, struct list_elem* elem){            //List -> struct list
-    ist_insert_before(plist->head.next, elem);
+    list_insert_before(plist->head.next, elem);
 }
 
 /* 追加元素到链表队尾 */

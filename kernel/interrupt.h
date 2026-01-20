@@ -2,8 +2,13 @@
 #define __KERNEL_INTERRUPT_H
 #include "stdint.h"
 
+#define IDT_DESC_CNT 0x30  // 支持的中断数 (48 个)
+
 // 中断处理函数类型定义
 typedef void (*intr_handler)(uint8_t);
+
+// IDT 中断处理函数表
+extern intr_handler idt_table[IDT_DESC_CNT];
 
 // 初始化中断
 void idt_init(void);

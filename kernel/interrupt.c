@@ -71,6 +71,10 @@ static void general_intr_handler(uint8_t vec_nr) {
         // 0x2f 是从片 8259A 上的最后一个 IRQ 引脚，保留项
         return;
     }
+    /* 时钟中断和键盘中断太频繁，暂时不打印 */
+    if (vec_nr == 0x20 || vec_nr == 0x21) {
+        return;
+    }
     put_str("int vector: ");
     put_hex(vec_nr);
     put_char('\n');

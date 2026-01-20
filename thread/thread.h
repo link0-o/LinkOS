@@ -2,6 +2,7 @@
 #define __THREAD_THREAD_H
 #include "stdint.h"
 #include "list.h"
+#include "rbtree.h"
 
 /* 自定义通用函数类型，它将在很多线程函数中作为形参类型 */
 typedef void thread_func(void*);
@@ -93,12 +94,21 @@ struct thread_stack {
 struct task_struct{
     uint32_t* self_kstack;          // 各内核线程都用自己的内核栈
     enum task_status status;        // 线程状态
-    uint8_t priority;               // 线程优先级
+    uint8_t priority;               // 线程优先级（用于计算 weight）
     char name[16];
     uint8_t ticks;                  // 每次在处理器上执行的时间嘀嗒数
 
     /* 此任务自上 cpu 运行后至今占用了多少 cpu 嘀嗒数, 也就是此任务执行了多久 */
     uint32_t elapsed_ticks;
+    
+    /* ========== CFS 调度器相关字段 ========== */
+    uint64_t vruntime;              // 虚拟运行时间（CFS 核心）
+    uint32_t weight;                // 权重（从 priority 计算得出）
+    uint64_t exec_start;            // 开始执行的时间戳
+    uint64_t sum_exec_runtime;      // 总执行时间
+    struct rb_node rb_node;         // 红黑树节点（用于 CFS 就绪队列）
+    /* ======================================== */
+    
     struct list_elem general_tag;   // 用于线程在一般队列中的结点
     struct list_elem all_list_tag;  // 用于线程队列 thread_all_list 中
     
@@ -111,8 +121,14 @@ struct task_struct{
 
 
 
+/* 获取当前线程 PCB 指针 */
+struct task_struct* running_thread(void);
+
 /* 创建一优先级为 prio 的线程，线程名为 name，线程所执行的函数是 function(func_arg) */
 struct task_struct* thread_start(char* name, int prio, thread_func function, void* func_arg);   
+void thread_init(void);  // 初始化线程环境
 
+/* 上下文切换函数（汇编实现） */
+extern void switch_to(struct task_struct* prev, struct task_struct* next);
 
 #endif

@@ -24,6 +24,13 @@ typedef enum {
 #define SELECTOR_K_STACK SELECTOR_K_DATA
 #define SELECTOR_K_GS   ((3 << 3) + (TI_GDT << 2) + RPL0)
 
+/*-------------- EFLAGS 寄存器标志位 ------------*/
+#define EFLAGS_MBS    (1 << 1)   // 此项必须要设置为 1
+#define EFLAGS_IF_1   (1 << 9)   // if 为 1, 开中断
+#define EFLAGS_IF_0   0
+#define EFLAGS_IOPL_3 (3 << 12)  // IOPL3, 用于测试用户程序在非系统调用下进行 IO
+#define EFLAGS_IOPL_0 (0 << 12)  // IOPL0
+
 /*-------------- IDT 描述符属性 ------------*/
 #define IDT_DESC_P        1
 #define IDT_DESC_DPL0     0
