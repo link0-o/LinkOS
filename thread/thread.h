@@ -3,6 +3,7 @@
 #include "stdint.h"
 #include "list.h"
 #include "rbtree.h"
+#include "memory.h"
 
 /* 自定义通用函数类型，它将在很多线程函数中作为形参类型 */
 typedef void thread_func(void*);
@@ -25,7 +26,7 @@ enum task_status {
  * 此栈在线程自己的内核栈中位置固定，所在页的最顶端
  * ************************************************/
  struct intr_stack {
-    uint32_t vec_no;                // kernel.S 宏 VECTOR 中 push %1 压入的中断号
+    uint32_t vec_no;                // kernel.asm 宏 VECTOR 中 push %1 压入的中断号
     uint32_t edi;
     uint32_t esi;
     uint32_t ebp;
@@ -93,6 +94,7 @@ struct thread_stack {
 /* 进程或线程的 pcb，程序控制块 */
 struct task_struct{
     uint32_t* self_kstack;          // 各内核线程都用自己的内核栈
+    uint32_t pid;                   // 进程 ID
     enum task_status status;        // 线程状态
     uint8_t priority;               // 线程优先级（用于计算 weight）
     char name[16];
@@ -109,10 +111,12 @@ struct task_struct{
     struct rb_node rb_node;         // 红黑树节点（用于 CFS 就绪队列）
     /* ======================================== */
     
-    struct list_elem general_tag;   // 用于线程在一般队列中的结点
-    struct list_elem all_list_tag;  // 用于线程队列 thread_all_list 中
+    struct list_elem general_tag;   // 用于各种等待队列(信号量、锁、条件变量等)
+    struct list_elem all_list_tag;  // 用于全局线程列表 thread_all_list
     
-    uint32_t* pgdir;                 // 进程自己页表的虚拟地址  
+    uint32_t* pgdir;                 // 进程自己页表的虚拟地址, 内核为 NULL(使用默认地址0x100000)
+    struct virtual_addr userprog_vaddr; // 用户进程的虚拟地址池
+    struct mem_block_desc u_block_descs[MEM_BLOCK_DESC_CNT]; // 用户进程自己的内存块描述符
 
     uint32_t stack_magic;           // 栈的边界标记，用于检测栈的溢出
 };
@@ -124,9 +128,19 @@ struct task_struct{
 /* 获取当前线程 PCB 指针 */
 struct task_struct* running_thread(void);
 
+/* 初始化线程基本信息（供内部和进程创建使用） */
+void init_thread(struct task_struct* pthread, char* name, int prio);
+
+/* 创建线程执行栈（供内部和进程创建使用） */
+void thread_create(struct task_struct* pthread, thread_func function, void* func_arg);
+
 /* 创建一优先级为 prio 的线程，线程名为 name，线程所执行的函数是 function(func_arg) */
-struct task_struct* thread_start(char* name, int prio, thread_func function, void* func_arg);   
+struct task_struct* thread_start(char* name, int prio, thread_func function, void* func_arg);
 void thread_init(void);  // 初始化线程环境
+
+/* 线程阻塞和唤醒 */
+void thread_block(enum task_status stat);
+void thread_unblock(struct task_struct* pthread);
 
 /* 上下文切换函数（汇编实现） */
 extern void switch_to(struct task_struct* prev, struct task_struct* next);

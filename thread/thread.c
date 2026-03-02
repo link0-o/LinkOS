@@ -2,15 +2,26 @@
 #include "stdint.h"
 #include "string.h"
 #include "global.h"
+#include "interrupt.h"
 #include "memory.h"
 #include "sched.h"
 #include "list.h"
 #include "print.h"
+#include "debug.h"
+#include "sync.h"
 
 #define PG_SIZE 4096
 
-/* 函数前置声明 */
-static void init_thread(struct task_struct* pthread, char* name, int prio);
+static uint32_t next_pid = 0;      // 全局 PID 计数器
+static struct lock pid_lock;       // 保护 PID 分配的锁
+
+/* 分配 PID（线程安全）*/
+static uint32_t allocate_pid(void) {
+    lock_acquire(&pid_lock);
+    uint32_t pid = next_pid++;
+    lock_release(&pid_lock);
+    return pid;
+}
 
 struct task_struct* main_thread;    // 主线程 PCB 
 struct list thread_ready_list;      // 就绪队列（已被 CFS 红黑树替代，保留用于兼容）
@@ -50,6 +61,10 @@ static void make_main_thread(void) {
 void thread_init(void) {
     put_str("thread_init start\n");
     list_init(&thread_all_list);
+    
+    /* 初始化 PID 分配锁 */
+    lock_init(&pid_lock);
+    
     sched_init();  // 初始化 CFS 调度器
     
     /* 将当前 main 函数创建为主线程 */
@@ -72,7 +87,8 @@ static void kernel_thread(thread_func* function, void* func_arg) {
 //初始化线程栈 thread_stack，将待执行的函数和参数放到 thread_stack 中相应的位置
 void thread_create(struct task_struct* pthread, thread_func function, void* func_arg){
     // 先预留中断使用栈的空间，thread.h 中定义的结构 intr_stack
-    pthread->self_kstack -= sizeof(struct intr_stack);
+    // 注意：self_kstack 是 uint32_t*，指针算术会自动 ×4，必须用字节级运算
+    pthread->self_kstack = (uint32_t*)((char*)pthread->self_kstack - sizeof(struct intr_stack));
     
     // 初始化中断栈 (用于第一次调度时的环境)
     struct intr_stack* intr_0_stack = (struct intr_stack*)pthread->self_kstack;
@@ -90,7 +106,7 @@ void thread_create(struct task_struct* pthread, thread_func function, void* func
     intr_0_stack->ss = 0;
 
     // 再留出线程栈空间，thread_stack
-    pthread->self_kstack -= sizeof(struct thread_stack);
+    pthread->self_kstack = (uint32_t*)((char*)pthread->self_kstack - sizeof(struct thread_stack));
     
     struct thread_stack* kthread_stack = (struct thread_stack*)pthread->self_kstack;
     kthread_stack->eip = kernel_thread;
@@ -102,6 +118,9 @@ void thread_create(struct task_struct* pthread, thread_func function, void* func
 /* 初始化线程基本信息 */
 void init_thread(struct task_struct* pthread, char* name, int prio){
     memset(pthread, 0, sizeof(*pthread));
+    
+    pthread->pid = allocate_pid();  // 分配 PID
+    
     strcpy(pthread->name, name);
     pthread->status = TASK_READY;  // 新创建的线程应该是就绪状态
     pthread->priority = prio;
@@ -138,4 +157,27 @@ struct task_struct* thread_start(char* name, int prio, thread_func function, voi
     list_append(&thread_all_list, &thread->all_list_tag);
 
     return thread;
+}
+
+/* 当前线程将自己阻塞，标志其状态为 stat. */
+void thread_block(enum task_status stat){
+    ASSERT((stat == TASK_BLOCKED) || (stat == TASK_WAITING) || (stat == TASK_HANGING));
+    
+    enum intr_status old_status = intr_disable();
+    struct task_struct* cur_thread = running_thread();
+    cur_thread->status = stat;
+    schedule();  // 调度其他线程运行
+    intr_set_status(old_status);
+}
+
+/* 将线程 pthread 解除阻塞 */
+void thread_unblock(struct task_struct* pthread){
+    enum intr_status old_status = intr_disable();
+    ASSERT(pthread->status == TASK_BLOCKED ||
+           pthread->status == TASK_WAITING ||
+           pthread->status == TASK_HANGING);
+    pthread->status = TASK_READY;
+    /* 加入就绪队列 */
+    enqueue_task(pthread);
+    intr_set_status(old_status);
 }

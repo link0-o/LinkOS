@@ -403,3 +403,59 @@ put_hex:
     popad
     ret
 
+;------------------------ set_cursor -----------------------------
+; 功能: 设置光标位置
+; 参数: cursor_pos (光标位置,0-based)
+;-------------------------------------------------------------------
+global set_cursor
+set_cursor:
+    pushad
+    mov bx, [esp + 36]      ; 获取参数 cursor_pos
+    
+    ; 设置光标高 8 位
+    mov dx, 0x03d4
+    mov al, 0x0e
+    out dx, al
+    mov dx, 0x03d5
+    mov al, bh
+    out dx, al
+    
+    ; 设置光标低 8 位
+    mov dx, 0x03d4
+    mov al, 0x0f
+    out dx, al
+    mov dx, 0x03d5
+    mov al, bl
+    out dx, al
+    
+    popad
+    ret
+
+;------------------------ get_cursor -----------------------------
+; 功能: 获取当前光标位置
+; 返回: eax = 光标位置
+;-------------------------------------------------------------------
+global get_cursor
+get_cursor:
+    push edx
+    
+    ; 获取光标高 8 位
+    mov dx, 0x03d4
+    mov al, 0x0e
+    out dx, al
+    mov dx, 0x03d5
+    in al, dx
+    mov ah, al
+    
+    ; 获取光标低 8 位
+    mov dx, 0x03d4
+    mov al, 0x0f
+    out dx, al
+    mov dx, 0x03d5
+    in al, dx
+    
+    ; 返回值在 ax 中,扩展到 eax
+    movzx eax, ax
+    
+    pop edx
+    ret

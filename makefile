@@ -5,7 +5,7 @@ ENTRY_POINT = 0xc0001500
 AS = nasm
 CC = gcc
 LD = ld
-LIB = -I lib/ -I lib/kernel/ -I lib/usr/  -I kernel/ -I device/ -I thread/
+LIB = -I lib/ -I lib/kernel/ -I lib/usr/  -I kernel/ -I device/ -I thread/ -I userprog/
 ASFLAGS = -f elf
 DISK_IMG = /home/yangyuhang/bochs/disk/hd60M.img
 
@@ -20,7 +20,10 @@ OBJS = $(BUILD_DIR)/main.o $(BUILD_DIR)/init.o $(BUILD_DIR)/interrupt.o \
        $(BUILD_DIR)/timer.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/print.o \
 	   $(BUILD_DIR)/debug.o $(BUILD_DIR)/memory.o $(BUILD_DIR)/bitmap.o \
 	   $(BUILD_DIR)/string.o $(BUILD_DIR)/thread.o $(BUILD_DIR)/list.o \
-	   $(BUILD_DIR)/rbtree.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/switch.o
+	   $(BUILD_DIR)/rbtree.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/switch.o \
+	   $(BUILD_DIR)/sync.o $(BUILD_DIR)/console.o $(BUILD_DIR)/keyboard.o \
+	   $(BUILD_DIR)/ioqueue.o $(BUILD_DIR)/tss.o $(BUILD_DIR)/process.o \
+	   $(BUILD_DIR)/syscall.o $(BUILD_DIR)/usr_syscall.o $(BUILD_DIR)/stdio.o
 
 ##############	MBR 和 Loader 编译  ###############
 $(BUILD_DIR)/mbr.bin: mbr.asm
@@ -31,12 +34,13 @@ $(BUILD_DIR)/loader.bin: loader.asm
 
 ##############	c 代码编译	###############
 $(BUILD_DIR)/main.o: kernel/main.c lib/kernel/print.h lib/stdint.h kernel/init.h \
-					 lib/kernel/debug.h kernel/memory.h thread/thread.h
+					 lib/kernel/debug.h kernel/memory.h thread/thread.h device/console.h \
+					 userprog/process.h lib/usr/stdio.h kernel/syscall.h lib/string.h
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/init.o: kernel/init.c kernel/init.h lib/kernel/print.h \
                     lib/stdint.h kernel/interrupt.h device/timer.h \
-                    kernel/memory.h
+                    kernel/memory.h thread/thread.h device/console.h device/keyboard.h
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/interrupt.o: kernel/interrupt.c kernel/interrupt.h \
@@ -66,7 +70,8 @@ $(BUILD_DIR)/string.o: lib/string.c lib/string.h \
 
 $(BUILD_DIR)/thread.o: thread/thread.c thread/thread.h \
 					 lib/stdint.h lib/string.h kernel/global.h kernel/memory.h \
-					 kernel/sched.h lib/kernel/list.h lib/kernel/rbtree.h
+					 kernel/sched.h lib/kernel/list.h lib/kernel/rbtree.h \
+					 kernel/interrupt.h lib/kernel/print.h lib/kernel/debug.h
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/list.o: lib/kernel/list.c lib/kernel/list.h \
@@ -80,7 +85,48 @@ $(BUILD_DIR)/rbtree.o: lib/kernel/rbtree.c lib/kernel/rbtree.h \
 $(BUILD_DIR)/sched.o: kernel/sched.c kernel/sched.h \
 					 thread/thread.h lib/kernel/rbtree.h lib/stdint.h \
 					 kernel/global.h lib/kernel/debug.h kernel/interrupt.h \
-					 lib/kernel/print.h lib/string.h
+					 lib/kernel/print.h lib/string.h userprog/process.h                          
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/sync.o: thread/sync.c thread/sync.h \
+					 lib/stdint.h lib/kernel/rbtree.h lib/kernel/list.h \
+					 thread/thread.h kernel/interrupt.h lib/kernel/debug.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/console.o: device/console.c device/console.h \
+					 lib/kernel/print.h lib/stdint.h thread/sync.h thread/thread.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/keyboard.o: device/keyboard.c device/keyboard.h \
+					 lib/kernel/io.h lib/kernel/print.h kernel/interrupt.h kernel/global.h \
+					 device/ioqueue.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/ioqueue.o: device/ioqueue.c device/ioqueue.h \
+					 kernel/interrupt.h kernel/global.h lib/kernel/debug.h thread/sync.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/tss.o: userprog/tss.c userprog/tss.h \
+					 kernel/global.h lib/stdint.h lib/string.h lib/kernel/print.h thread/thread.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/process.o: userprog/process.c userprog/process.h \
+					 thread/thread.h kernel/global.h kernel/memory.h userprog/tss.h \
+					 kernel/interrupt.h lib/kernel/debug.h lib/string.h lib/kernel/bitmap.h \
+					 lib/kernel/list.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/syscall.o: kernel/syscall.c kernel/syscall.h \
+					 lib/stdint.h lib/kernel/print.h thread/thread.h lib/string.h \
+					 device/console.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/stdio.o: lib/usr/stdio.c lib/usr/stdio.h \
+				 lib/stdint.h lib/stdarg.h lib/usr/syscall.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/usr_syscall.o: lib/usr/syscall.c lib/usr/syscall.h \
+				 lib/stdint.h lib/stdarg.h
 	$(CC) $(CFLAGS) $< -o $@
 
 ##############	汇编代码编译  ###############

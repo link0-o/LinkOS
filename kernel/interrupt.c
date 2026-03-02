@@ -9,13 +9,11 @@
 #define PIC_S_CTRL 0xa0    // 从片的控制端口是 0xa0
 #define PIC_S_DATA 0xa1    // 从片的数据端口是 0xa1
 
-#define IDT_DESC_CNT 0x30  // 目前总共支持的中断数（0x00~0x2f，共 48 个）
+extern uint32_t syscall_handler(void);
+
 
 #define EFLAGS_IF   0x00000200              // eflags 寄存器中的 if 位为 1
 #define GET_EFLAGS(EFLAG_VAR) asm volatile("pushfl; popl %0" : "=g" (EFLAG_VAR))
-
-// 定义中断处理函数指针类型
-typedef void (*intr_handler)(uint8_t);
 
 // 中断门描述符结构体
 struct gate_desc {
@@ -60,6 +58,9 @@ static void pic_init(void) {
     /* 打开主片上 IR0,也就是目前只接受时钟产生的中断 */
     outb(PIC_M_DATA, 0xfe);
     outb(PIC_S_DATA, 0xff);
+    /* 测试键盘中断 */
+    outb(PIC_M_DATA, 0xfc);
+    outb(PIC_S_DATA, 0xff);
 
     put_str("   pic_init done\n");
 }
@@ -78,6 +79,16 @@ static void general_intr_handler(uint8_t vec_nr) {
     put_str("int vector: ");
     put_hex(vec_nr);
     put_char('\n');
+}
+
+/* Page Fault 专用处理：直接 halt，避免打印触发再次 PF 死循环 */
+static void page_fault_handler(uint8_t vec_nr) {
+    uint32_t cr2;
+    asm volatile ("movl %%cr2, %0" : "=r" (cr2));
+    put_str("\nPage Fault! addr: ");
+    put_hex(cr2);
+    put_char('\n');
+    while(1);
 }
 
 /* 完成一般中断处理函数注册及异常名称注册 */
@@ -110,6 +121,9 @@ static void exception_init(void) {
     intr_name[17] = "#AC Alignment Check Exception";
     intr_name[18] = "#MC Machine-Check Exception";
     intr_name[19] = "#XF SIMD Floating-Point Exception";
+
+    /* 注册 Page Fault 专用处理函数 */
+    idt_table[14] = page_fault_handler;
 }
 
 // 创建中断门描述符
@@ -127,7 +141,9 @@ static void idt_desc_init(void) {
     for (i = 0; i < IDT_DESC_CNT; i++) {
         make_idt_desc(&idt[i], IDT_DESC_ATTR_DPL0, intr_entry_table[i]);
     }
-    put_str("   idt_desc_init done\n");
+    make_idt_desc(&idt[0x80], IDT_DESC_ATTR_DPL3, syscall_handler);
+    
+    put_str("idt_desc_init done\n");
 }
 
 /* 完成有关中断的所有初始化工作 */
@@ -138,7 +154,7 @@ void idt_init() {
     pic_init();        // 初始化 8259A
 
     /* 加载 idt */
-    uint64_t idt_operand = ((sizeof(idt) - 1) | ((uint64_t)((uint32_t)idt << 16)));
+    uint64_t idt_operand = ((sizeof(idt) - 1) | ((uint64_t)(uint32_t)idt << 16));
     asm volatile("lidt %0" : : "m" (idt_operand));
     put_str("idt_init done\n");
 }
@@ -181,4 +197,10 @@ enum intr_status intr_disable(){
 /* 将中断状态设置为 status */
 enum intr_status intr_set_status(enum intr_status status){
     return status&INTR_ON ? intr_enable() : intr_disable();
+}
+
+/* 注册中断处理函数 */
+void register_handler(uint8_t vector_no, intr_handler function) {
+    /* idt_table 数组中的函数是在进入中断后根据中断向量号调用的 */
+    idt_table[vector_no] = function;
 }

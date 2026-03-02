@@ -7,6 +7,7 @@
 #include "interrupt.h"
 #include "print.h"
 #include "string.h"
+#include "process.h"
 
 /* Nice 值到权重的映射表（Linux 内核标准值）
  * nice 值范围：-20 到 19
@@ -200,6 +201,9 @@ void schedule(void) {
     dequeue_task(next);
     next->status = TASK_RUNNING;
     next->exec_start = next->elapsed_ticks;
+    
+    /* 激活任务页表等（支持用户进程） */
+    process_activate(next);
     
     /* 如果切换到不同的线程 */
     if (next != prev) {

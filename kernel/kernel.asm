@@ -1,4 +1,8 @@
 [bits 32]
+%define SELECTOR_K_CODE 0x08        ; ((1 << 3) + (TI_GDT << 2) + RPL0)
+%define SELECTOR_K_DATA 0x10
+%define SELECTOR_U_CODE 0x2B
+%define SELECTOR_U_DATA 0x33
 ;--------------------------------------------------
 ; 中断入口表
 ; 为 33 个中断/异常建立统一处理程序
@@ -101,12 +105,56 @@ VECTOR 0x2f, ZERO            ;IDE 从盘
 ; 中断退出统一处理
 ;--------------------------------------------------
 section .text
+global intr_exit
 intr_exit:
-    add esp, 4              ; 跳过中断向量号参数
+    add esp, 4              ; 跳过中断向量号参数（vec_no）
     popad                   ; 恢复通用寄存器
     pop gs
     pop fs
     pop es
     pop ds
-    add esp, 4              ; 跳过 error_code
-    iret                    ; 中断返回
+    add esp, 4              ; 跳过 err_code
+    iretd                   ; 中断返回
+
+;--------------------------------------------------
+; 系统调用入口（int 0x80）
+;--------------------------------------------------
+extern syscall_table
+
+global syscall_handler
+syscall_handler:
+    ; 保存上下文
+    push 0                  ; 压入错误码占位（系统调用没有错误码）
+    
+    push ds
+    push es
+    push fs
+    push gs
+    pushad                  ; 保存所有通用寄存器
+    
+    push 0x80               ; 压入中断向量号 0x80
+    
+    ; 切换到内核数据段
+    push edx                ; 保存 edx（系统调用可能需要）
+    mov dx, SELECTOR_K_DATA
+    mov ds, dx
+    mov es, dx
+    pop edx                 ; 恢复 edx
+    
+    ; 调用 C 函数处理系统调用
+    ; syscall_table 是一个函数指针数组
+    ; eax 中是系统调用号，ebx/ecx/edx/esi/edi 中是参数
+    
+    push edi                ; 第 5 个参数
+    push esi                ; 第 4 个参数
+    push edx                ; 第 3 个参数
+    push ecx                ; 第 2 个参数
+    push ebx                ; 第 1 个参数
+    
+    call [syscall_table + eax*4]  ; 调用对应的系统调用处理函数
+    add esp, 20             ; 清理 5 个参数（5*4=20 字节）
+    
+    ; 将返回值存入栈中的 eax 位置（popad 会恢复它）
+    mov [esp + 8*4], eax    ; 跳过 8 个寄存器到达 eax 的位置
+    
+    jmp intr_exit           ; 通过 intr_exit 返回用户态

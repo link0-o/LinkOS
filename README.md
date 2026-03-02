@@ -77,7 +77,7 @@ bochs -f bochsrc.disk
 | 0x7C00~0x7DFF | MBR 加载区 (512 字节) |
 | 0x7E00~0x8FFF | 可用内存 |
 | 0x0900~0x0CFF | Loader 加载区 (~1024 字节) |
-| 0x0B00 | `total_mem_bytes` (内存总量) |
+| 0x0B08 | `total_mem_bytes` (内存总量) |
 | 0xB8000~0xBFFFF | 文本模式显存 |
 
 ## 🎨 显示颜色代码
@@ -120,7 +120,7 @@ bp 0x900           # 在 Loader 入口设置断点
 c                  # 继续执行
 s                  # 单步执行
 n                  # 执行到下一指令（跳过call）
-x /1wx 0xb00       # 查看内存(显示为十六进制)
+x /1wx 0xb08       # 查看内存(显示为十六进制)
 r                  # 查看寄存器
 u /20              # 反汇编 20 条指令
 ```
