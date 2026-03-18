@@ -23,7 +23,8 @@ static uint32_t allocate_pid(void) {
     return pid;
 }
 
-struct task_struct* main_thread;    // 主线程 PCB 
+struct task_struct* main_thread;    // 主线程 PCB
+struct task_struct* idle_thread;    // idle 线程
 struct list thread_ready_list;      // 就绪队列（已被 CFS 红黑树替代，保留用于兼容）
 struct list thread_all_list;        // 所有线程队列
 
@@ -57,6 +58,15 @@ static void make_main_thread(void) {
     main_thread->exec_start = main_thread->elapsed_ticks;
 }
 
+/* 系统空闲时运行的 idle 线程 */
+static void idle(void* arg UNUSED) {
+    while (1) {
+        thread_block(TASK_BLOCKED);
+        /* 执行 hlt 时必须要保证目前处在开中断的情况下 */
+        asm volatile ("sti; hlt" : : : "memory");
+    }
+}
+
 /* 初始化线程环境 */
 void thread_init(void) {
     put_str("thread_init start\n");
@@ -69,6 +79,9 @@ void thread_init(void) {
     
     /* 将当前 main 函数创建为主线程 */
     make_main_thread();
+    
+    /* 创建 idle 线程，当就緒队列为空时运行 */
+    idle_thread = thread_start("idle", 10, idle, NULL);
     
     put_str("thread_init done\n");
 }
@@ -179,5 +192,15 @@ void thread_unblock(struct task_struct* pthread){
     pthread->status = TASK_READY;
     /* 加入就绪队列 */
     enqueue_task(pthread);
+    intr_set_status(old_status);
+}
+/* 主动让出 cpu，换其他线程运行 */
+void thread_yield(void) {
+    struct task_struct* cur = running_thread();
+    enum intr_status old_status = intr_disable();
+    /* 将当前线程重新加入就緒队列 */
+    cur->status = TASK_READY;
+    enqueue_task(cur);
+    schedule();  // 调度器会把当前线程从队列取出再运行
     intr_set_status(old_status);
 }

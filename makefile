@@ -23,7 +23,8 @@ OBJS = $(BUILD_DIR)/main.o $(BUILD_DIR)/init.o $(BUILD_DIR)/interrupt.o \
 	   $(BUILD_DIR)/rbtree.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/switch.o \
 	   $(BUILD_DIR)/sync.o $(BUILD_DIR)/console.o $(BUILD_DIR)/keyboard.o \
 	   $(BUILD_DIR)/ioqueue.o $(BUILD_DIR)/tss.o $(BUILD_DIR)/process.o \
-	   $(BUILD_DIR)/syscall.o $(BUILD_DIR)/usr_syscall.o $(BUILD_DIR)/stdio.o
+	   $(BUILD_DIR)/syscall.o $(BUILD_DIR)/usr_syscall.o $(BUILD_DIR)/stdio.o \
+	   $(BUILD_DIR)/ide.o $(BUILD_DIR)/stdio-kernel.o
 
 ##############	MBR 和 Loader 编译  ###############
 $(BUILD_DIR)/mbr.bin: mbr.asm
@@ -40,7 +41,8 @@ $(BUILD_DIR)/main.o: kernel/main.c lib/kernel/print.h lib/stdint.h kernel/init.h
 
 $(BUILD_DIR)/init.o: kernel/init.c kernel/init.h lib/kernel/print.h \
                     lib/stdint.h kernel/interrupt.h device/timer.h \
-                    kernel/memory.h thread/thread.h device/console.h device/keyboard.h
+                    kernel/memory.h thread/thread.h device/console.h device/keyboard.h \
+                    device/ide.h
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/interrupt.o: kernel/interrupt.c kernel/interrupt.h \
@@ -127,6 +129,17 @@ $(BUILD_DIR)/stdio.o: lib/usr/stdio.c lib/usr/stdio.h \
 
 $(BUILD_DIR)/usr_syscall.o: lib/usr/syscall.c lib/usr/syscall.h \
 				 lib/stdint.h lib/stdarg.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/ide.o: device/ide.c device/ide.h \
+				 lib/stdint.h kernel/global.h lib/kernel/io.h \
+				 lib/kernel/debug.h kernel/interrupt.h device/timer.h \
+				 thread/sync.h lib/kernel/list.h lib/kernel/bitmap.h \
+				 lib/string.h kernel/syscall.h lib/kernel/stdio-kernel.h lib/usr/stdio.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/stdio-kernel.o: lib/kernel/stdio-kernel.c lib/kernel/stdio-kernel.h \
+				 lib/usr/stdio.h device/console.h lib/stdarg.h
 	$(CC) $(CFLAGS) $< -o $@
 
 ##############	汇编代码编译  ###############

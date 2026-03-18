@@ -189,12 +189,23 @@ void schedule(void) {
     next = pick_next_task();
     
     if (!next) {
-        /* 没有可运行的线程，继续运行当前线程 */
-        if (prev && prev->status == TASK_READY) {
-            dequeue_task(prev);
-            prev->status = TASK_RUNNING;
+        /* 就绪队列为空 */
+        extern struct task_struct* idle_thread;
+        if (prev == idle_thread) {
+            /* idle 线程正在阻塞自己，但没有其他任务可运行，
+             * 直接让 idle 继续运行（执行 hlt 指令节省 CPU） */
+            idle_thread->status = TASK_RUNNING;
+            current_thread = idle_thread;
+            return;
         }
-        return;
+        /* 非 idle 线程调度时队列为空，唤醒 idle 线程 */
+        thread_unblock(idle_thread);
+        next = pick_next_task();
+        if (!next) {
+            /* 理论上不应到达此处 */
+            if (prev) { prev->status = TASK_RUNNING; }
+            return;
+        }
     }
     
     /* 从就绪队列移除 */
@@ -208,12 +219,6 @@ void schedule(void) {
     /* 如果切换到不同的线程 */
     if (next != prev) {
         current_thread = next;
-        // 调试: 打印线程切换信息
-        // put_str("Switching: ");
-        // put_str(prev ? prev->name : "NULL");
-        // put_str(" -> ");
-        // put_str(next->name);
-        // put_char('\n');
         switch_to(prev, next);  // 上下文切换
     }
 }

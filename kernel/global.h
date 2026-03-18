@@ -84,6 +84,9 @@ typedef enum {
 
 #define DIV_ROUND_UP(X, STEP) ((X + STEP - 1) / (STEP))
 
+/* 标记参数/变量未使用，消除编译器警告 */
+#define UNUSED __attribute__((unused))
+
 /*-------------- IDT 描述符属性 ------------*/
 #define IDT_DESC_P        1
 #define IDT_DESC_DPL0     0

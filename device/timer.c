@@ -7,6 +7,7 @@
 #include "sched.h"
 
 #define IRQ0_FREQUENCY      100                 //每秒100次中断,10ms一次
+#define mil_seconds_per_intr (1000 / IRQ0_FREQUENCY)  // 每次中断间隔毫秒数 = 10ms
 #define INPUT_FREQUENCY     1193180
 #define COUNTER0_VALUE      INPUT_FREQUENCY / IRQ0_FREQUENCY        //中断发生频率
 #define COUNTER0_PORT       0x40                //计数器 0 的数据端口地址
@@ -56,6 +57,26 @@ void timer_init(){
     idt_table[0x20] = timer_interrupt_handler;  // IRQ0 对应中断向量号 0x20
                   
     put_str("timer_init done\n");
+}
+
+/* 时钟中断处理函数 
+ * 每 10ms 触发一次 (IRQ0_FREQUENCY = 100Hz)
+ * 适配 CFS 调度器,参考 Linux 内核设计
+ */
+/* 以 tick 为单位的 sleep，任何时间形式的 sleep 会转换为此 ticks 形式 */
+static void ticks_to_sleep(uint32_t sleep_ticks) {
+    uint32_t start_tick = ticks;
+    /* 若间隔的 ticks 数不够便让出 cpu */
+    while (ticks - start_tick < sleep_ticks) {
+        thread_yield();
+    }
+}
+
+/* 以毫秒为单位的 sleep，1 秒 = 1000 毫秒 */
+void mtime_sleep(uint32_t m_seconds) {
+    uint32_t sleep_ticks = DIV_ROUND_UP(m_seconds, mil_seconds_per_intr);
+    ASSERT(sleep_ticks > 0);
+    ticks_to_sleep(sleep_ticks);
 }
 
 /* 时钟中断处理函数 

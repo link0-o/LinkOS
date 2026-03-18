@@ -128,6 +128,11 @@ struct task_struct{
 /* 获取当前线程 PCB 指针 */
 struct task_struct* running_thread(void);
 
+/* 全局线程变量 */
+extern struct task_struct* main_thread;     // 主线程 PCB
+extern struct task_struct* idle_thread;     // idle 线程（就绪队列为空时运行）
+extern struct list thread_all_list;         // 所有线程队列
+
 /* 初始化线程基本信息（供内部和进程创建使用） */
 void init_thread(struct task_struct* pthread, char* name, int prio);
 
@@ -138,9 +143,10 @@ void thread_create(struct task_struct* pthread, thread_func function, void* func
 struct task_struct* thread_start(char* name, int prio, thread_func function, void* func_arg);
 void thread_init(void);  // 初始化线程环境
 
-/* 线程阻塞和唤醒 */
+/* 线程阻塞、唤醒和主动让出 CPU */
 void thread_block(enum task_status stat);
 void thread_unblock(struct task_struct* pthread);
+void thread_yield(void);
 
 /* 上下文切换函数（汇编实现） */
 extern void switch_to(struct task_struct* prev, struct task_struct* next);
