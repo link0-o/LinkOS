@@ -1,0 +1,36 @@
+###############################################
+# Configuration file for Bochs (支持 GDB 调试)
+###############################################
+
+# 1. 设置内存大小（32MB，足够基础调试使用）
+megs: 32  
+
+# 2. 指定 BIOS 和 VGA BIOS 路径（替换为你的实际安装路径）
+romimage: file=share/bochs/BIOS-bochs-latest
+vgaromimage: file=share/bochs/VGABIOS-lgpl-latest
+
+# 3. 硬盘配置（IDE 控制器 + 虚拟硬盘镜像）
+ata0: enabled=1, ioaddr1=0x1f0, ioaddr2=0x3f0, irq=14
+ata0-master: type=disk, path="disk/hd60M.img", mode=flat # 关联你的硬盘镜像
+
+# 从盘
+ata0-slave: type=disk, path="disk/hd80M.img", mode=flat, cylinders=162, heads=16, spt=63
+
+# 4. 启动顺序（从硬盘启动）
+boot: disk
+
+# 5. 输入设备配置（关闭鼠标，启用键盘映射）
+mouse: enabled=0
+# 正确配置（仅保留 keymap 参数，适配 Bochs 2.7）
+keyboard: keymap=share/bochs/keymaps/x11-pc-us.map
+
+# 6. 日志输出（记录调试信息到 bochs.out）
+log: bochs.out  # 明确日志路径，避免散落在当前目录
+
+#魔术断点
+magic_break: enabled=1        
+
+# 8. GDB 远程调试支持（取消注释即可启用，端口 1234）
+# gdbstub: enabled=1, port=1234, text_base=0, data_base=0, bss_base=0
+# 说明：启用后，Bochs 会暂停等待 GDB 连接，连接命令为：gdb -ex "target remote localhost:1234"
+
