@@ -14,7 +14,8 @@ A 32-bit x86 operating system written from scratch, inspired by the book *erta O
 - **Synchronization**: Semaphores + reentrant mutexes
 - **ext2-like Filesystem**: Superblock + bitmaps + inode with triple indirect indexing, 4KB blocks, up to 4096 files
 - **Interactive Shell**: 12 built-in commands (ls, cd, cat, echo, mkdir, rm, etc.) with `>` redirection
-- **Device Drivers**: Keyboard (scancode translation + ring buffer), 8253 PIT timer (100Hz), IDE hard disk, VGA text mode
+- **Device Drivers**: Keyboard (scancode translation + ring buffer), 8253 PIT timer (100Hz), PCI IDE Bus Master DMA disk, VGA text mode
+- **DMA Subsystem**: Includes both the 8237A ISA DMA controller abstraction and a PCI IDE Bus Master DMA disk path
 
 ## Project Structure
 
@@ -55,6 +56,8 @@ LinkOS/
     │   ├── keyboard.c/h     # Keyboard interrupt handler + scancode mapping
     │   ├── timer.c/h        # 8253 PIT initialization + timer interrupt (100Hz)
     │   ├── console.c/h      # Console output lock
+    │   ├── dma.c/h          # 8237A DMA controller driver + channel programming API
+    │   ├── ide.c/h          # IDE driver (PCI BMIDE DMA first, PIO fallback)
     │   └── ioqueue.c/h      # Producer-consumer ring buffer
     │
     ├── fs/                  # Filesystem
@@ -275,6 +278,15 @@ Uses the Linux CFS (Completely Fair Scheduler) algorithm:
 - `vruntime` increment = actual runtime × 1024 / weight
 - Weight determined by nice value lookup (nice=0 → weight=1024)
 - Timer interrupt at 100Hz, scheduling latency 30ms, minimum granularity 10ms
+
+### DMA Driver
+
+- `dma_init()` resets the 8237A controller flip-flops during boot and masks programmable channels by default
+- The exported API includes `dma_channel_setup()`, `dma_channel_mask()`, `dma_channel_unmask()`, and `dma_buffer_is_compatible()`
+- The disk layer now scans the PCI IDE controller, enables the BAR4 Bus Master IDE registers, and prefers ATA `READ DMA` / `WRITE DMA` in the low-level `ide_read()` / `ide_write()` path
+- IDE DMA uses a PRDT (Physical Region Descriptor Table) to split virtual buffers into page-sized physical segments, enabling scatter-gather transfers instead of PIO port copies
+- If PCI BMIDE is unavailable or a disk reports no ATA DMA support, the IDE driver falls back to the original PIO path automatically
+- The 8237A driver remains available for floppy, sound, or other ISA devices and still enforces the 64KB/128KB boundary and 16MB physical address rules
 
 ## License
 

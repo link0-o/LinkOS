@@ -14,7 +14,8 @@
 - **同步原语**：信号量 + 可重入互斥锁
 - **类 ext2 文件系统**：超级块 + 位图 + inode 三级间接索引、4KB 块、最多 4096 文件
 - **交互式 Shell**：12 个内建命令（ls, cd, cat, echo, mkdir, rm 等），支持 `>` 重定向
-- **设备驱动**：键盘（扫描码转换 + 环形缓冲）、8253 PIT 时钟（100Hz）、IDE 硬盘、VGA 文本模式
+- **设备驱动**：键盘（扫描码转换 + 环形缓冲）、8253 PIT 时钟（100Hz）、PCI IDE Bus Master DMA 硬盘、VGA 文本模式
+- **DMA 子系统**：同时包含 8237A ISA DMA 控制器抽象与 PCI IDE Bus Master DMA 磁盘路径
 
 ## 项目结构
 
@@ -55,6 +56,8 @@ LinkOS/
     │   ├── keyboard.c/h     # 键盘中断处理 + 扫描码映射
     │   ├── timer.c/h        # 8253 PIT 初始化 + 时钟中断（100Hz）
     │   ├── console.c/h      # 控制台输出锁
+    │   ├── dma.c/h          # 8237A DMA 控制器驱动 + 通道编程接口
+    │   ├── ide.c/h          # IDE 驱动（PCI BMIDE DMA 优先，PIO 回退）
     │   └── ioqueue.c/h      # 生产者-消费者环形缓冲区
     │
     ├── fs/                  # 文件系统
@@ -275,6 +278,15 @@ u /10 0xc0001500       # 反汇编
 - `vruntime` 增量 = 实际运行时间 × 1024 / 权重
 - 权重由 nice 值查表确定（nice=0 → weight=1024）
 - 时钟中断频率 100Hz，调度延迟 30ms，最小粒度 10ms
+
+### DMA 驱动
+
+- 启动阶段会调用 `dma_init()`，复位 8237A 控制器的 flip-flop 并屏蔽可编程通道
+- 对外提供 `dma_channel_setup()`、`dma_channel_mask()`、`dma_channel_unmask()`、`dma_buffer_is_compatible()`
+- 磁盘层现在会扫描 PCI IDE 控制器，启用 BAR4 暴露的 Bus Master IDE 寄存器，并优先对文件系统底层 `ide_read()` / `ide_write()` 使用 ATA `READ DMA` / `WRITE DMA` 命令
+- IDE DMA 使用 PRDT（Physical Region Descriptor Table）把任意虚拟缓冲区拆成按页物理段，支持跨页 scatter-gather，不再依赖 PIO 数据端口搬运
+- 当 PCI BMIDE 不可用或磁盘不支持 ATA DMA 时，IDE 驱动仍会自动回退到原有 PIO 路径
+- 8237A 驱动仍然保留，供软驱、声卡或其它 ISA 设备复用；它继续检查 64KB/128KB 边界和 16MB 物理地址窗口
 
 ## 许可证
 

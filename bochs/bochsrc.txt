@@ -10,6 +10,7 @@ romimage: file=share/bochs/BIOS-bochs-latest
 vgaromimage: file=share/bochs/VGABIOS-lgpl-latest
 
 # 3. 硬盘配置（IDE 控制器 + 虚拟硬盘镜像）
+pci: enabled=1, chipset=i440fx
 ata0: enabled=1, ioaddr1=0x1f0, ioaddr2=0x3f0, irq=14
 ata0-master: type=disk, path="disk/hd60M.img", mode=flat # 关联你的硬盘镜像
 

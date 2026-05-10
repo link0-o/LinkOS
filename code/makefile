@@ -1,4 +1,4 @@
-.PHONY : mk_dir hd clean all
+.PHONY : mk_dir disk_dir disk_images reset_data_disk hd clean all
 
 # 默认目标: make = make all (编译 + 写盘)
 .DEFAULT_GOAL := all
@@ -11,6 +11,12 @@ LD = ld
 LIB = -I lib/ -I lib/kernel/ -I lib/usr/  -I kernel/ -I device/ -I thread/ -I userprog/ -I fs/ -I shell/
 ASFLAGS = -f elf
 DISK_IMG = ../bochs/disk/hd60M.img
+DATA_DISK_IMG = ../bochs/disk/hd80M.img
+DISK_DIR = ../bochs/disk
+SYS_DISK_SIZE = 62914560
+DATA_DISK_SIZE = 83607552
+DATA_PART_START_LBA = 2048
+DATA_PART_SECTORS = 161248
 
 # -Wall 开启所有常规警告(Warnings all).    -c 只编译，不链接，生成 .o 文件		-W	开启额外警告
 #-fno-builtin	禁用 gcc 内置函数（如 memcpy），避免与内核实现冲突		-Wstrict-prototypes	警告：函数声明没有指定参数类型
@@ -25,6 +31,7 @@ OBJS = $(BUILD_DIR)/main.o $(BUILD_DIR)/init.o $(BUILD_DIR)/interrupt.o \
 	   $(BUILD_DIR)/string.o $(BUILD_DIR)/thread.o $(BUILD_DIR)/list.o \
 	   $(BUILD_DIR)/rbtree.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/switch.o \
 	   $(BUILD_DIR)/sync.o $(BUILD_DIR)/console.o $(BUILD_DIR)/keyboard.o \
+	   $(BUILD_DIR)/dma.o \
 	   $(BUILD_DIR)/ioqueue.o $(BUILD_DIR)/tss.o $(BUILD_DIR)/process.o \
 	   $(BUILD_DIR)/syscall.o $(BUILD_DIR)/usr_syscall.o $(BUILD_DIR)/stdio.o \
 	   $(BUILD_DIR)/ide.o $(BUILD_DIR)/stdio-kernel.o \
@@ -48,7 +55,7 @@ $(BUILD_DIR)/main.o: kernel/main.c lib/kernel/print.h lib/stdint.h kernel/init.h
 $(BUILD_DIR)/init.o: kernel/init.c kernel/init.h lib/kernel/print.h \
                     lib/stdint.h kernel/interrupt.h device/timer.h \
                     kernel/memory.h thread/thread.h device/console.h device/keyboard.h \
-                    device/ide.h
+					device/dma.h device/ide.h
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/interrupt.o: kernel/interrupt.c kernel/interrupt.h \
@@ -108,6 +115,11 @@ $(BUILD_DIR)/console.o: device/console.c device/console.h \
 $(BUILD_DIR)/keyboard.o: device/keyboard.c device/keyboard.h \
 					 lib/kernel/io.h lib/kernel/print.h kernel/interrupt.h kernel/global.h \
 					 device/ioqueue.h
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/dma.o: device/dma.c device/dma.h \
+					 lib/stdint.h kernel/global.h lib/kernel/io.h \
+					 lib/kernel/debug.h lib/kernel/print.h kernel/memory.h
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/ioqueue.o: device/ioqueue.c device/ioqueue.h \
@@ -190,16 +202,32 @@ $(BUILD_DIR)/kernel.bin: $(OBJS)
 	$(LD) $(LDFLAGS) $^ -o $@
 
 mk_dir:
-	if [[ ! -d $(BUILD_DIR) ]];then mkdir $(BUILD_DIR);fi
+	if [ ! -d $(BUILD_DIR) ]; then mkdir -p $(BUILD_DIR); fi
+
+disk_dir:
+	if [ ! -d $(DISK_DIR) ]; then mkdir -p $(DISK_DIR); fi
+
+disk_images: disk_dir
+	if [ ! -f $(DISK_IMG) ]; then truncate -s $(SYS_DISK_SIZE) $(DISK_IMG); fi
+	if [ ! -f $(DATA_DISK_IMG) ]; then \
+		truncate -s $(DATA_DISK_SIZE) $(DATA_DISK_IMG); \
+		printf '\000\001\001\000\203\376\377\377\000\010\000\000\340\165\002\000' | \
+			dd of=$(DATA_DISK_IMG) bs=1 seek=446 conv=notrunc status=none; \
+		printf '\125\252' | dd of=$(DATA_DISK_IMG) bs=1 seek=510 conv=notrunc status=none; \
+	fi
+
+reset_data_disk: disk_dir
+	rm -f $(DATA_DISK_IMG)
+	$(MAKE) disk_images
 
 # 分别写入 MBR、Loader、Kernel
-hd_mbr: $(BUILD_DIR)/mbr.bin
+hd_mbr: disk_images $(BUILD_DIR)/mbr.bin
 	dd if=$(BUILD_DIR)/mbr.bin of=$(DISK_IMG) bs=512 count=1 conv=notrunc
 
-hd_loader: $(BUILD_DIR)/loader.bin
+hd_loader: disk_images $(BUILD_DIR)/loader.bin
 	dd if=$(BUILD_DIR)/loader.bin of=$(DISK_IMG) bs=512 count=4 seek=2 conv=notrunc
 
-hd_kernel: $(BUILD_DIR)/kernel.bin
+hd_kernel: disk_images $(BUILD_DIR)/kernel.bin
 	dd if=$(BUILD_DIR)/kernel.bin of=$(DISK_IMG) bs=512 count=200 seek=9 conv=notrunc
 
 # 统一写盘
@@ -209,7 +237,7 @@ clean:
 	cd $(BUILD_DIR) && rm -f ./*
 	@echo "clean done!"
 
-compile: $(BUILD_DIR)/mbr.bin $(BUILD_DIR)/loader.bin $(BUILD_DIR)/kernel.bin
+compile: mk_dir $(BUILD_DIR)/mbr.bin $(BUILD_DIR)/loader.bin $(BUILD_DIR)/kernel.bin
 
 all: mk_dir compile hd
 	@echo "build done!"

@@ -37,6 +37,18 @@
         return data;
     }
 
+    /* 向端口 port 写入一个双字 */
+    static inline void outl(uint16_t port, uint32_t data){
+        asm volatile ("outl %0,%w1" : : "a"(data), "Nd"(port));
+    }
+
+    /* 将从端口 port 读入的一个双字返回 */
+    static inline uint32_t inl(uint16_t port){
+        uint32_t data;
+        asm volatile("inl %w1,%0" : "=a"(data) : "Nd"(port));
+        return data;
+    }
+
     /* 将从端口 port 读入的 word_cnt 个字写入 addr */
     static inline void insw(uint16_t port, void* addr, uint32_t word_cnt){
         asm volatile("cld; rep insw" : "+D"(addr), "+c"(word_cnt) : "d"(port) : "memory");

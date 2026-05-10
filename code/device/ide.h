@@ -25,6 +25,7 @@ struct disk {
     char name[8];                       // 本硬盘的名称（如 sda、sdb）
     struct ide_channel* my_channel;     // 此硬盘归属于哪个 ide 通道
     uint8_t dev_no;                     // 本硬盘是主盘（0）还是从盘（1）
+    bool dma_supported;                 // IDENTIFY 返回该盘支持 ATA DMA 命令
     struct partition prim_parts[4];     // 主分区，最多 4 个
     struct partition logic_parts[8];    // 逻辑分区，最多支持 8 个
 };
@@ -34,6 +35,10 @@ struct ide_channel {
     char name[8];                   // 本 ATA 通道名称（如 ide0、ide1）
     uint16_t port_base;             // 本通道的命令块寄存器起始端口号
     uint8_t irq_no;                 // 本通道所用的中断向量号
+    uint16_t dma_base;              // PCI Bus Master IDE 寄存器基址（0 表示不可用）
+    uint32_t prdt_phys;             // PRDT 的物理地址
+    void* prdt;                     // PRDT 的虚拟地址（1 页）
+    bool dma_enabled;               // 当前通道是否启用了 BMIDE DMA
     struct lock lock;               // 通道锁（同一通道一次只能操作一块硬盘）
     bool expecting_intr;            // 表示等待硬盘的中断（已向硬盘发命令时置为 true）
     struct semaphore disk_done;     // 用于阻塞和唤醒驱动程序的信号量

@@ -15,9 +15,14 @@
 extern void* sys_malloc(uint32_t size);
 extern void  sys_free(void* ptr);
 
+extern void* get_kernel_pages(uint32_t pg_cnt);
+extern void  mfree_page(enum pool_flags pf, void* _vaddr, uint32_t pg_cnt);
+extern uint32_t addr_v2p(uint32_t vaddr);
+
 /* 定义硬盘各寄存器的端口号（相对于通道起始端口的偏移） */
 #define reg_data(channel)       (channel->port_base + 0)   // 数据寄存器（16位）
 #define reg_error(channel)      (channel->port_base + 1)   // 错误寄存器（读）/ 特征寄存器（写）
+#define reg_feature(channel)    reg_error(channel)
 #define reg_sect_cnt(channel)   (channel->port_base + 2)   // 扇区计数寄存器
 #define reg_lba_l(channel)      (channel->port_base + 3)   // LBA 低 8 位（bit 0~7）
 #define reg_lba_m(channel)      (channel->port_base + 4)   // LBA 中 8 位（bit 8~15）
@@ -31,7 +36,9 @@ extern void  sys_free(void* ptr);
 /* reg_alt_status / reg_status 寄存器的关键位 */
 #define BIT_STAT_BSY            0x80  // 硬盘忙（Busy）
 #define BIT_STAT_DRDY           0x40  // 驱动器准备好（Device Ready）
+#define BIT_STAT_DF             0x20  // 设备错误（Device Fault）
 #define BIT_STAT_DRQ            0x08  // 数据传输准备好（Data Request）
+#define BIT_STAT_ERR            0x01  // 错误位
 
 /* device 寄存器的关键位 */
 #define BIT_DEV_MBS             0xa0  // 第 7 位和第 5 位固定为 1（Must Be Set）
@@ -42,6 +49,41 @@ extern void  sys_free(void* ptr);
 #define CMD_IDENTIFY            0xec  // IDENTIFY 命令：获取硬盘身份信息
 #define CMD_READ_SECTOR         0x20  // READ SECTOR(S) 命令：读扇区
 #define CMD_WRITE_SECTOR        0x30  // WRITE SECTOR(S) 命令：写扇区
+#define CMD_READ_DMA            0xc8  // READ DMA 命令：通过 BMIDE DMA 读扇区
+#define CMD_WRITE_DMA           0xca  // WRITE DMA 命令：通过 BMIDE DMA 写扇区
+
+/* PCI config mechanism #1 寄存器 */
+#define PCI_CONFIG_ADDR         0xcf8
+#define PCI_CONFIG_DATA         0xcfc
+
+/* PCI 设备筛选：Mass Storage / IDE */
+#define PCI_CLASS_MASS_STORAGE  0x01
+#define PCI_SUBCLASS_IDE        0x01
+
+/* PCI 配置空间偏移 */
+#define PCI_REG_CLASS_CODE      0x08
+#define PCI_REG_COMMAND         0x04
+#define PCI_REG_BAR4            0x20
+
+/* PCI command 寄存器位 */
+#define PCI_CMD_IO_SPACE        0x01
+#define PCI_CMD_BUS_MASTER      0x04
+
+/* BMIDE 寄存器布局：每个通道占 8 字节 */
+#define reg_bm_cmd(channel)     (channel->dma_base + 0)
+#define reg_bm_status(channel)  (channel->dma_base + 2)
+#define reg_bm_prdt(channel)    (channel->dma_base + 4)
+
+/* BMIDE command/status 位 */
+#define BM_CMD_START            0x01
+#define BM_CMD_READ             0x08  // 1 = 磁盘 -> 内存, 0 = 内存 -> 磁盘
+#define BM_STATUS_ACTIVE        0x01
+#define BM_STATUS_ERROR         0x02
+#define BM_STATUS_INTR          0x04
+
+#define IDE_PRDT_MAX_ENTRIES    256
+#define IDE_PRD_EOT             0x8000
+#define IDE_DMA_MAX_BYTES       (256 * 512)
 
 /* 支持的最大 LBA 地址（调试用，限制在 80MB 以内） */
 #define max_lba                 ((80 * 1024 * 1024 / 512) - 1)
@@ -56,6 +98,13 @@ static uint8_t p_no = 0;           // 主分区下标计数
 static uint8_t l_no = 0;           // 逻辑分区下标计数
 
 struct list partition_list;         // 所有分区的链表（供文件系统使用）
+
+/* PCI IDE Bus Master 的 PRDT 项。一个项描述一段物理连续缓冲区。 */
+struct ide_prd_entry {
+    uint32_t phys_addr;
+    uint16_t byte_count;
+    uint16_t flags;
+} __attribute__((packed));
 
 /* 分区表项结构（16 字节） */
 struct partition_table_entry {
@@ -111,6 +160,179 @@ static void select_sector(struct disk* hd, uint32_t lba, uint8_t sec_cnt) {
 static void cmd_out(struct ide_channel* channel, uint8_t cmd) {
     channel->expecting_intr = true;
     outb(reg_cmd(channel), cmd);
+}
+
+/* 通过 PCI config mechanism #1 读取配置空间双字 */
+static uint32_t pci_config_read_dword(uint8_t bus, uint8_t device,
+                                      uint8_t function, uint8_t reg) {
+    uint32_t addr = 0x80000000 | ((uint32_t)bus << 16) |
+                    ((uint32_t)device << 11) | ((uint32_t)function << 8) |
+                    (reg & 0xfc);
+    outl(PCI_CONFIG_ADDR, addr);
+    return inl(PCI_CONFIG_DATA);
+}
+
+/* 向 PCI 配置空间写入双字 */
+static void pci_config_write_dword(uint8_t bus, uint8_t device,
+                                   uint8_t function, uint8_t reg,
+                                   uint32_t value) {
+    uint32_t addr = 0x80000000 | ((uint32_t)bus << 16) |
+                    ((uint32_t)device << 11) | ((uint32_t)function << 8) |
+                    (reg & 0xfc);
+    outl(PCI_CONFIG_ADDR, addr);
+    outl(PCI_CONFIG_DATA, value);
+}
+
+/* 在 PCI 总线上寻找 IDE 控制器，并打开 I/O Space + Bus Master。
+ * Bochs 的 i440FX/PIIX IDE 会通过 BAR4 暴露 BMIDE 寄存器。 */
+static uint16_t pci_find_ide_bmibase(void) {
+    uint8_t device;
+    uint8_t function;
+
+    for (device = 0; device < 32; device++) {
+        for (function = 0; function < 8; function++) {
+            uint32_t vendor_device = pci_config_read_dword(0, device, function, 0x00);
+            uint32_t class_reg;
+            uint32_t bar4;
+            uint32_t cmd_reg;
+
+            if ((vendor_device & 0xffff) == 0xffff) {
+                if (function == 0) {
+                    break;
+                }
+                continue;
+            }
+
+            class_reg = pci_config_read_dword(0, device, function, PCI_REG_CLASS_CODE);
+            if (((class_reg >> 24) & 0xff) != PCI_CLASS_MASS_STORAGE ||
+                ((class_reg >> 16) & 0xff) != PCI_SUBCLASS_IDE) {
+                continue;
+            }
+
+            cmd_reg = pci_config_read_dword(0, device, function, PCI_REG_COMMAND);
+            cmd_reg |= PCI_CMD_IO_SPACE | PCI_CMD_BUS_MASTER;
+            pci_config_write_dword(0, device, function, PCI_REG_COMMAND, cmd_reg);
+
+            bar4 = pci_config_read_dword(0, device, function, PCI_REG_BAR4);
+            if ((bar4 & 0x1) == 0) {
+                return 0;
+            }
+            printk("   pci ide controller: %x:%x bmide=0x%x\n",
+                   device, function, bar4 & 0xfff0);
+            return bar4 & 0xfff0;
+        }
+    }
+    return 0;
+}
+
+/* BMIDE 完成后不要求 DRQ=1，因此单独检查 DMA 结束状态。 */
+static bool dma_wait(struct disk* hd) {
+    struct ide_channel* channel = hd->my_channel;
+    uint16_t time_limit = 30 * 1000;
+
+    while (time_limit -= 10 >= 0) {
+        uint8_t status = inb(reg_status(channel));
+        if (!(status & BIT_STAT_BSY)) {
+            return !(status & (BIT_STAT_ERR | BIT_STAT_DF));
+        }
+        mtime_sleep(10);
+    }
+    return false;
+}
+
+/* 把任意虚拟缓冲区拆成 PRDT。
+ * 每个 PRD 只描述当前页里的连续物理范围，避免跨页假定物理连续。 */
+static bool ide_build_prdt(struct ide_channel* channel, void* buf, uint32_t bytes) {
+    struct ide_prd_entry* prdt = (struct ide_prd_entry*)channel->prdt;
+    uint32_t vaddr = (uint32_t)buf;
+    uint32_t bytes_left = bytes;
+    uint32_t prd_idx = 0;
+
+    ASSERT(channel->prdt != NULL);
+    memset(prdt, 0, 4096);
+
+    while (bytes_left > 0) {
+        uint32_t phys_addr = addr_v2p(vaddr);
+        uint32_t page_left = 4096 - (phys_addr & 0xfff);
+        uint32_t chunk = bytes_left < page_left ? bytes_left : page_left;
+
+        if (prd_idx >= IDE_PRDT_MAX_ENTRIES) {
+            return false;
+        }
+
+        prdt[prd_idx].phys_addr = phys_addr;
+        prdt[prd_idx].byte_count = chunk == 0x10000 ? 0 : chunk;
+        prdt[prd_idx].flags = 0;
+
+        bytes_left -= chunk;
+        vaddr += chunk;
+        prd_idx++;
+    }
+
+    prdt[prd_idx - 1].flags = IDE_PRD_EOT;
+    return true;
+}
+
+/* 配置单个通道的 BMIDE 资源。 */
+static void ide_dma_channel_init(struct ide_channel* channel, uint8_t channel_no,
+                                 uint16_t bmide_base) {
+    channel->dma_base = bmide_base + channel_no * 8;
+    channel->prdt = get_kernel_pages(1);
+    if (channel->prdt == NULL) {
+        channel->dma_enabled = false;
+        channel->dma_base = 0;
+        printk("   %s dma disabled: no memory for prdt\n", channel->name);
+        return;
+    }
+
+    channel->prdt_phys = addr_v2p((uint32_t)channel->prdt);
+    channel->dma_enabled = true;
+    outb(reg_bm_cmd(channel), 0x00);
+    outb(reg_bm_status(channel), BM_STATUS_ERROR | BM_STATUS_INTR);
+    printk("   %s dma base: 0x%x prdt=0x%x\n",
+           channel->name, channel->dma_base, channel->prdt_phys);
+}
+
+/* 通过 PCI IDE Bus Master 读/写扇区。
+ * 若通道或设备不支持 DMA，则返回 false 让上层退回 PIO。 */
+static bool ide_dma_transfer(struct disk* hd, uint32_t lba, void* buf,
+                             uint8_t sec_cnt, bool is_write) {
+    struct ide_channel* channel = hd->my_channel;
+    uint32_t bytes = sec_cnt == 0 ? IDE_DMA_MAX_BYTES : sec_cnt * 512;
+    uint8_t bm_cmd = is_write ? 0 : BM_CMD_READ;
+    uint8_t bm_status;
+
+    if (!channel->dma_enabled || !hd->dma_supported) {
+        return false;
+    }
+    if (!ide_build_prdt(channel, buf, bytes)) {
+        return false;
+    }
+
+    outb(reg_bm_cmd(channel), bm_cmd);
+    outl(reg_bm_prdt(channel), channel->prdt_phys);
+    outb(reg_bm_status(channel), BM_STATUS_ERROR | BM_STATUS_INTR);
+
+    select_disk(hd);
+    select_sector(hd, lba, sec_cnt);
+    outb(reg_feature(channel), 0x00);
+
+    cmd_out(channel, is_write ? CMD_WRITE_DMA : CMD_READ_DMA);
+    outb(reg_bm_cmd(channel), bm_cmd | BM_CMD_START);
+
+    sema_down(&channel->disk_done);
+    outb(reg_bm_cmd(channel), bm_cmd);
+
+    bm_status = inb(reg_bm_status(channel));
+    outb(reg_bm_status(channel), BM_STATUS_ERROR | BM_STATUS_INTR);
+
+    if ((bm_status & BM_STATUS_ERROR) || !(bm_status & BM_STATUS_INTR)) {
+        return false;
+    }
+    if (!dma_wait(hd)) {
+        return false;
+    }
+    return true;
 }
  
 /* 从硬盘缓冲区读取 sec_cnt 个扇区的数据到内存 buf */
@@ -175,25 +397,26 @@ void ide_read(struct disk* hd, uint32_t lba, void* buf, uint32_t sec_cnt) {
         }
 
         /* 步骤 2：写入起始扇区号和扇区数 */
-        select_sector(hd, lba + secs_done, secs_op);
+        if (hd->my_channel->dma_enabled && hd->dma_supported) {
+            if (!ide_dma_transfer(hd, lba + secs_done,
+                                  (void*)((uint32_t)buf + secs_done * 512),
+                                  secs_op, false)) {
+                char error[64];
+                sprintf(error, "%s dma read sector %d failed!\n", hd->name, lba + secs_done);
+                PANIC(error);
+            }
+        } else {
+            select_sector(hd, lba + secs_done, secs_op);
+            cmd_out(hd->my_channel, CMD_READ_SECTOR);
+            sema_down(&hd->my_channel->disk_done);
 
-        /* 步骤 3：发送读命令，此后硬盘开始内部读取 */
-        cmd_out(hd->my_channel, CMD_READ_SECTOR);
-
-        /* 步骤 4：硬盘开始工作，通过信号量阻塞自己，等待中断唤醒
-         * 中断处理程序 intr_hd_handler 会在硬盘完成操作后执行 sema_up */
-        sema_down(&hd->my_channel->disk_done);
-
-
-        /* 步骤 5：被唤醒后检查硬盘状态 */
-        if (!busy_wait(hd)) {
-            char error[64];
-            sprintf(error, "%s read sector %d failed!\n", hd->name, lba);
-            PANIC(error);
+            if (!busy_wait(hd)) {
+                char error[64];
+                sprintf(error, "%s read sector %d failed!\n", hd->name, lba);
+                PANIC(error);
+            }
+            read_from_sector(hd, (void*)((uint32_t)buf + secs_done * 512), secs_op);
         }
-
-        /* 步骤 6：从硬盘的数据寄存器中读取数据到 buf */
-        read_from_sector(hd, (void*)((uint32_t)buf + secs_done * 512), secs_op);
         secs_done += secs_op;
     }
     lock_release(&hd->my_channel->lock);
@@ -218,24 +441,27 @@ void ide_write(struct disk* hd, uint32_t lba, void* buf, uint32_t sec_cnt) {
             secs_op = sec_cnt - secs_done;
         }
 
-        /* 步骤 2：写入起始扇区号和扇区数 */
-        select_sector(hd, lba + secs_done, secs_op);
+        if (hd->my_channel->dma_enabled && hd->dma_supported) {
+            if (!ide_dma_transfer(hd, lba + secs_done,
+                                  (void*)((uint32_t)buf + secs_done * 512),
+                                  secs_op, true)) {
+                char error[64];
+                sprintf(error, "%s dma write sector %d failed!\n", hd->name, lba + secs_done);
+                PANIC(error);
+            }
+        } else {
+            select_sector(hd, lba + secs_done, secs_op);
+            cmd_out(hd->my_channel, CMD_WRITE_SECTOR);
 
-        /* 步骤 3：发送写命令 */
-        cmd_out(hd->my_channel, CMD_WRITE_SECTOR);
+            if (!busy_wait(hd)) {
+                char error[64];
+                sprintf(error, "%s write sector %d failed!\n", hd->name, lba);
+                PANIC(error);
+            }
 
-        /* 步骤 4：检查硬盘是否准备好接收数据（写操作需先检查 DRQ） */
-        if (!busy_wait(hd)) {
-            char error[64];
-            sprintf(error, "%s write sector %d failed!\n", hd->name, lba);
-            PANIC(error);
+            write2sector(hd, (void*)((uint32_t)buf + secs_done * 512), secs_op);
+            sema_down(&hd->my_channel->disk_done);
         }
-
-        /* 步骤 5：将数据写入硬盘缓冲区 */
-        write2sector(hd, (void*)((uint32_t)buf + secs_done * 512), secs_op);
-
-        /* 步骤 6：硬盘开始实际写入，阻塞等待中断唤醒 */
-        sema_down(&hd->my_channel->disk_done);
         secs_done += secs_op;
     }
     lock_release(&hd->my_channel->lock);
@@ -303,8 +529,11 @@ static void identify_disk(struct disk* hd) {
     printk("      MODULE: %s\n", buf);
 
     uint32_t sectors = *(uint32_t*)&id_info[60 * 2];   // 字偏移 60~61，共 32 位
+    uint16_t* id_words = (uint16_t*)id_info;
+    hd->dma_supported = (id_words[49] & 0x0100) || id_words[63] || id_words[88];
     printk("      SECTORS: %d\n", sectors);
     printk("      CAPACITY: %dMB\n", sectors * 512 / 1024 / 1024);
+    printk("      DMA: %s\n", hd->dma_supported ? "supported" : "pio-only");
     lock_release(&hd->my_channel->lock);
 }
 
@@ -423,6 +652,7 @@ static bool partition_info(struct list_elem* pelem, int arg UNUSED) {
  */
 void ide_init(void) {
     printk("ide_init start\n");
+    uint16_t bmide_base = pci_find_ide_bmibase();
 
     /* BIOS 数据区 0x475 存放着系统检测到的硬盘数量 */
     uint8_t hd_cnt = *((uint8_t*)(0x475));
@@ -456,6 +686,10 @@ void ide_init(void) {
                 break;
         }
 
+        channel->dma_base = 0;
+        channel->prdt = NULL;
+        channel->prdt_phys = 0;
+        channel->dma_enabled = false;
         channel->expecting_intr = false;
         lock_init(&channel->lock);
 
@@ -466,11 +700,16 @@ void ide_init(void) {
         /* 注册本通道的硬盘中断处理程序 */
         register_handler(channel->irq_no, intr_hd_handler);
 
+        if (bmide_base != 0) {
+            ide_dma_channel_init(channel, channel_no, bmide_base);
+        }
+
         /* 扫描该通道上的所有硬盘 */
         while (dev_no < 2) {
             struct disk* hd = &channel->devices[dev_no];
             hd->my_channel = channel;
             hd->dev_no     = dev_no;
+            hd->dma_supported = false;
             /* 命名规则：sda=通道0主盘，sdb=通道0从盘，sdc=通道1主盘…… */
             sprintf(hd->name, "sd%c", 'a' + channel_no * 2 + dev_no);
 
